@@ -2281,10 +2281,18 @@ def _process_publish(
                 value = _lbl(session.mac_raw, topic, value)
             mqtt_client.publish(topic, value, retain=True, qos=0)
     else:
+        # Published gear ("Automatic"/"N") per climate accessory — lets the live
+        # decoder pick the responsive live-level source for an Automatic gear and
+        # defer to the op log only for a fixed gear. (v3.19.347)
+        _cached = getattr(mqtt_client, "cached", None)
+        climate_gear = {}
+        if _cached is not None:
+            for _f in ("heater", "humidifier"):
+                climate_gear[_f] = _cached(f"ggs/ha/{session.mac}/{_f}_gear/state")
         normalized = normalize_status(
             session.mac, data, mac=session.mac_raw, fan_cache=session.fan_state,
             light_cache=session.light_state, climate_cache=session.device_state,
-            plan_active=session.plan_active,
+            plan_active=session.plan_active, climate_gear=climate_gear,
         )
         _lbl = getattr(mqtt_client, "light_mode_label_override", None)
         _sup = getattr(mqtt_client, "device_air_suppressed", None)

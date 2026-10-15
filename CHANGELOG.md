@@ -3,6 +3,123 @@
 All notable changes to the Spider Farmer Bridge integration.
 Each section below is ready to paste into the matching GitHub release.
 
+## 3.19.352
+
+### Fixed
+- **Brightness dropdown briefly showed 11% when a light tile was expanded.** Follow-up
+  to 3.19.351: binding the select value with `live()` alone fixed the post-mode-switch
+  case but introduced a flash — on expand the select's `.value` commits before its
+  `<option>` children exist (Lit template part order), so the first render fell to the
+  first option (11%) and only corrected on the next re-render. Restored `?selected` on
+  the options (which selects the right option when they're first created) alongside
+  `live()` (which keeps re-renders correct), so the dropdown shows the real brightness
+  immediately with no flash. (card v0.21.82)
+
+## 3.19.351
+
+### Fixed
+- **Light Brightness dropdown reset to 11% after switching PPFD → Manual.** The tile
+  and the light stayed at the correct % (e.g. 70%), but the Manual-mode Brightness
+  selector snapped to its first option (11%) — and an Apply would then have pushed
+  11% to the light. Cause: the dropdown used Lit's `?selected` on each `<option>`,
+  which only sets the option's *attribute*, not the `<select>`'s live selection. On
+  the brief transition render the select defaulted to its first option and later
+  re-renders never moved the actual selection off it. The selector now binds its
+  value with Lit's `live()` directive, so it always reflects the light's real
+  brightness. (card v0.21.81)
+
+## 3.19.350
+
+### Fixed
+- **Dehumidifier tile turned "On" prematurely during the compressor cooldown.**
+  After the unit shut off it entered the ~3-minute compressor lockout and the tile
+  showed the cooldown countdown, but partway through (around 1:35 remaining) the tile
+  flipped to "On" while the device was still physically off — the firmware logs the
+  start *request* in the op log before the compressor can actually run. The card now
+  (1) keeps the lockout counting from the witnessed off moment regardless of the
+  switch/op-log state, (2) no longer clears the lockout when the switch flips back
+  "on" mid-window, and (3) suppresses the tile's "On" state while a cooldown is
+  active. The tile stays "Off" with the pill counting down until the unit can truly
+  run. (card v0.21.80)
+
+## 3.19.349
+
+### Fixed
+- **Dehumidifier Low/High was inverted on the tile.** In Humidity (auto) mode the
+  gear tile showed the opposite of what the SF app showed (SF app Low → tile High).
+  The controller reports the auto gear in its config `level` field, but the tile's
+  level sensor was reading the unrelated `mLevel` field (which stays at 1 regardless
+  of the gear), so it inverted. The tile now reads the same `level` field the gear
+  selector uses, so it matches the app. Manual-mode level still reads `mLevel`
+  (unchanged). This also completes the 3.19.348 flicker fix (the pulsing live field
+  is no longer read for the gear).
+
+## 3.19.348
+
+### Fixed
+- **Dehumidifier gear no longer flickers Low/High while running.** The tile's
+  Low/High reading is the gear you set, which comes from the device's config — but
+  while the dehumidifier was actually running, the live status frame's `level` field
+  pulses 0↔1 with the compressor (it's not the gear), and that was being shown as the
+  gear, so the tile flipped Low/High every few seconds during an on-cycle. The gear
+  display now comes only from the stable configured value, so it stays put (e.g.
+  "Low"). On/off and the compressor-cooldown pill are unchanged.
+
+## 3.19.347
+
+### Fixed
+- **Heater / humidifier tile now updates instantly again.** In 3.19.346 their
+  on/off was driven entirely by the operation log, which the controller pushes one
+  status frame *behind* the live reading — so the tile lagged the level sensor by
+  ~6 seconds on every on and off. Now, when the gear is **Automatic**, on/off comes
+  straight from the live running level (0 when idle), so the tile flips the instant
+  the device does. The operation log is still used **only** for a **fixed** gear,
+  where the controller pins the live level to the gear value and the op log is the
+  only way to tell running from idle (there the ~1-frame lag is unavoidable). The
+  dehumidifier is unchanged (it has no usable live level, so it stays op-log driven).
+
+## 3.19.346
+
+### Fixed
+- **Heater / humidifier tile no longer shows "On" when it's actually off with a
+  fixed gear.** In Environment (auto) mode you can set the gear to Automatic or to
+  a fixed level the unit powers on to. With a fixed gear the controller reports
+  that gear value as the live "level" even while the unit is idle, so the tile read
+  it as running and stuck "On". On/off for the heater and humidifier is now driven
+  by the operation log (exactly like the dehumidifier) — the actual On/Off/Offline
+  the controller records — so the tile is correct in every gear. The op log is
+  pushed in every status frame, so this is just as responsive as before.
+
+### Changed
+- **Heater / humidifier tiles show the gear under the mode.** In Environment mode
+  the tile now reads e.g. *Environment / Temperature / Auto* or *… / Auto - Lvl 4*,
+  so you can see at a glance whether the unit is on automatic or pinned to a level —
+  and it shows the gear even while off. (Card 0.21.79.)
+- **Dehumidifier cooldown pill nudged down slightly** on the device tile for better
+  centring. (Card 0.21.79.)
+
+### Added
+- **Blower "Offline" on its tile.** The blower now reports the operation log's
+  Offline marker as an `offline` attribute, so its tile shows "Offline" (not a plain
+  "Off") when the blower is unreachable while its controller is still online —
+  matching the heater/humidifier/dehumidifier. On/off for the blower stays driven by
+  its live reported speed (it reports standby/off accurately), so only the offline
+  marker comes from the op log.
+
+## 3.19.345
+
+### Added
+- **Device tiles now show "Offline" when a device is truly unreachable** — instead
+  of a misleading "Off". Two cases are covered: the whole controller drops off the
+  network (its entities go unavailable), or a single Environment accessory
+  (heater / humidifier / dehumidifier) reports **Offline** in its operation log
+  (opType 2) while the controller stays online — the same "Offline" the Spider
+  Farmer app shows. An offline tile is highlighted in red, matching an offline soil
+  probe. The marker is guarded by the live on-state, so a device that is actually
+  running is never mis-shown as offline. Exposed as an `offline` attribute on the
+  `switch.sf_<panel>_<heater|humidifier|dehumidifier>` entity (no new entities).
+  (Card 0.21.78.)
+
 ## 3.19.344
 
 ### Fixed

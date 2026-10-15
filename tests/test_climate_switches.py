@@ -178,14 +178,13 @@ async def test_climate_switch_entities_and_state(hass: HomeAssistant):
     bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
     _simulate_cb(bus)
     await hass.async_block_till_done()
-    # Dehumidifier on/off is op-log driven (v3.19.344): its live `level` is only
-    # the gear, so seed an op-log "off" (a bare mode entry = off).
+    # Default gear is Automatic (none cached), so heater/humidifier on/off is
+    # LIVE-level driven (v3.19.347, responsive): humidifier on=1 → on; heater has
+    # no live-on → off. The dehumidifier is always op-log driven — seed an off.
     bus.apply_oplog(CB_MAC, [
-        {"id": 1, "epoch": 100, "devType": 26, "opType": None, "modeType": 4}])
+        {"id": 3, "epoch": 100, "devType": 26, "opType": None, "modeType": 4}])
     await hass.async_block_till_done()
 
-    # Exact slot-based entity ids, state mirrors the _active topics:
-    # humidifier on=1 → on; dehumidifier off from the op log; heater level 0 → off.
     hum = hass.states.get("switch.sf_dp1_humidifier")
     deh = hass.states.get("switch.sf_dp1_dehumidifier")
     heat = hass.states.get("switch.sf_dp1_heater")
@@ -200,10 +199,11 @@ async def test_climate_switch_entities_and_state(hass: HomeAssistant):
     assert reg.async_get("switch.sf_dp1_humidifier").unique_id == f"ggs_{CB_MAC_LC}_humidifier"
     assert reg.async_get("switch.sf_dp1_dehumidifier").unique_id == f"ggs_{CB_MAC_LC}_dehumidifier"
 
-    # State follows the device: humidifier reports off on the next frame
+    # With an Automatic gear a live frame drives on/off: humidifier reports no
+    # running (no "on", level 0) → off, instantly.
     session = ProxySession(CB_MAC, bus)
     data = dict(CB_DATA)
-    data["humidifier"] = {"mLevel": 2, "modeType": 0}  # no "on" → not running
+    data["humidifier"] = {"mLevel": 2, "modeType": 4}   # no "on"/level → not running
     for _ in range(3):
         _process_publish(session, _pkt(data), bus)
     if session.initial_poll_task:
@@ -480,46 +480,73 @@ def test_climate_on_prefers_running_level():
     assert _climate_on({"mOnOff": 1}) is True             # config: no level
 
 
-def test_climate_config_frame_turns_tile_off_when_disabled():
-    """A config frame with mOnOff 0 turns the tile off promptly. For the
-    heater/humidifier, mOnOff 1 must NOT force it on — their running state stays
-    with the live `level`. The dehumidifier is the exception (v3.19.237): its live
-    `level` is the Low/High GEAR, not a running output, so `mOnOff` is its
-    authoritative on/off and drives the tile BOTH ways."""
+def test_climate_config_frame_never_publishes_active():
+    """v3.19.346: on/off for ALL three accessories is op-log driven, so a config
+    frame NEVER publishes `{field}_active` — not even mOnOff 0. In Environment/auto
+    mode mOnOff sits at 0 while the unit cycles (it means "enabled", not
+    "running"), so publishing on/off from it fought the real state. Config still
+    publishes the gear/level and the cfg_on flag."""
     from custom_components.sf.proxy.normalizer import normalize_config_response
     M, m = "0A1B2C3D4E01", "0a1b2c3d4e01"
-    # heater: disable turns off, but enable must not force on
+    # heater: neither disable nor enable publishes active; cfg_on tracks mOnOff.
     r = normalize_config_response(
         M, {"data": {"heater": {"modeType": 3, "mOnOff": 0, "level": 1}}})
-    assert r[f"ggs/ha/{m}/heater_active/state"] == "OFF"
+    assert f"ggs/ha/{m}/heater_active/state" not in r
+    assert r[f"ggs/ha/{m}/heater_cfg_on/state"] == "OFF"
     r = normalize_config_response(
         M, {"data": {"heater": {"modeType": 3, "mOnOff": 1, "level": 1}}})
     assert f"ggs/ha/{m}/heater_active/state" not in r
+    assert r[f"ggs/ha/{m}/heater_cfg_on/state"] == "ON"
+    # humidifier: same — no active from config.
+    r = normalize_config_response(
+        M, {"data": {"humidifier": {"modeType": 4, "mOnOff": 0, "level": 2}}})
+    assert f"ggs/ha/{m}/humidifier_active/state" not in r
     # dehumidifier: on/off is op-log driven now (v3.19.344) — config publishes the
-    # GEAR (Low/High) but never the active state.
+    # GEAR (Low/High) from the `level` field (NOT `mLevel`, v3.19.349) but never
+    # the active state. Both the gear SELECT and the LEVEL sensor read `level`.
     r = normalize_config_response(
-        M, {"data": {"dehumidifier": {"modeType": 4, "mOnOff": 0, "mLevel": 1}}})
+        M, {"data": {"dehumidifier": {"modeType": 4, "mOnOff": 1, "mLevel": 1, "level": 0}}})
     assert f"ggs/ha/{m}/dehumidifier_active/state" not in r
-    assert r[f"ggs/ha/{m}/dehumidifier_level/state"] == "High"
+    assert r[f"ggs/ha/{m}/dehumidifier_level/state"] == "Low"   # level 0 = Low (mLevel ignored)
+    assert r[f"ggs/ha/{m}/dehumidifier_gear/state"] == "Low"
     r = normalize_config_response(
-        M, {"data": {"dehumidifier": {"modeType": 4, "mOnOff": 1, "mLevel": 0}}})
-    assert f"ggs/ha/{m}/dehumidifier_active/state" not in r
-    assert r[f"ggs/ha/{m}/dehumidifier_level/state"] == "Low"
+        M, {"data": {"dehumidifier": {"modeType": 4, "mOnOff": 1, "mLevel": 1, "level": 1}}})
+    assert r[f"ggs/ha/{m}/dehumidifier_level/state"] == "High"  # level 1 = High
+    assert r[f"ggs/ha/{m}/dehumidifier_gear/state"] == "High"
 
 
 def test_dehumidifier_live_never_publishes_active():
     """v3.19.344: the dehumidifier's on/off is owned by the op log (bus.apply_oplog),
-    so neither the live nor the config decoder publishes dehumidifier_active — the
-    live decoder only refreshes the Low/High gear display."""
+    so neither the live nor the config decoder publishes dehumidifier_active."""
     from custom_components.sf.proxy.normalizer import _decode_dehumidifier
     m = "0a1b2c3d4e01"
-    for mod in ({"level": 0}, {"mOnOff": 1, "level": 0}, {"mOnOff": 0, "mLevel": 1}):
+    # The live decoder never publishes active (op log owns on/off).
+    for mod in ({"level": 0}, {"mOnOff": 1, "level": 0}, {"mOnOff": 0, "mLevel": 1},
+                {"on": 1, "level": 1}):
         out = {}
         _decode_dehumidifier(out, m, mod)
         assert f"ggs/ha/{m}/dehumidifier_active/state" not in out
+    # Manual-mode level: the live `mLevel` drives the Low/High display (v3.19.349).
     out = {}
     _decode_dehumidifier(out, m, {"mOnOff": 1, "mLevel": 1})
     assert out[f"ggs/ha/{m}/dehumidifier_level/state"] == "High"
+    out = {}
+    _decode_dehumidifier(out, m, {"mOnOff": 1, "mLevel": 0})
+    assert out[f"ggs/ha/{m}/dehumidifier_level/state"] == "Low"
+
+
+def test_dehumidifier_gear_not_flickered_by_running_level():
+    """v3.19.348/349: in Humidity/auto mode the RUNNING live block is {on:1, level:0}
+    and that `level` pulses 0↔1 with the compressor — it is NOT the gear. The live
+    decoder must NOT publish `dehumidifier_level` from the live `level` (that made the
+    tile flicker Low/High). A Humidity live frame carries no `mLevel`, so nothing is
+    published — the auto gear comes only from config `level`."""
+    from custom_components.sf.proxy.normalizer import _decode_dehumidifier
+    m = "0a1b2c3d4e01"
+    for mod in ({"on": 1, "level": 0}, {"on": 1, "level": 1}, {"mOnOff": 1, "level": 0}):
+        out = {}
+        _decode_dehumidifier(out, m, mod)
+        assert f"ggs/ha/{m}/dehumidifier_level/state" not in out, mod
 
 
 def _cfg(data: dict) -> MQTTPacket:
@@ -533,44 +560,63 @@ def _cfg(data: dict) -> MQTTPacket:
     )
 
 
-async def test_oplog_off_only_for_climate(hass: HomeAssistant):
-    """v3.19.243: the op log is an OFF-ONLY supplement for the heater/humidifier —
-    the live getDevSta `level` owns the ON state (level>0 = on, 0 = off, and the
-    controller DOES report the idle 0). An op-log opType 2 turns the tile off (the
-    auto-off the live frame can miss); a null heartbeat is ignored; and an op-log
-    opType 1 must NOT turn the tile on — that stale "on" (e.g. while enabled-but-idle
-    in Temperature mode) would flicker against the live "off" every getDevSta frame.
-    (The dehumidifier is config-mOnOff driven — see
-    test_dehumidifier_onoff_from_config_not_oplog.)"""
+async def test_oplog_drives_heater_humidifier(hass: HomeAssistant):
+    """v3.19.347: with a FIXED auto gear, heater/humidifier on/off is OP-LOG DRIVEN
+    (newest non-alarm entry wins), like the dehumidifier — because the live getDevSta
+    `level` is pinned to the gear value even while idle, so it can't tell running from
+    off. opType 1 => ON, opType null (bare mode entry) => OFF, opType 2 => OFFLINE
+    (off). A live frame's gear-pinned `level` must NOT change the tile's on/off (that
+    was the "stuck On with a fixed gear" bug)."""
     entry = await _setup(hass)
     bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
     _simulate_cb(bus)
     await hass.async_block_till_done()
-    # humidifier came up ON from the live frame (on:1)
+    # Fixed gear 4 → op log owns on/off (not the gear-pinned live level).
+    bus.publish(f"ggs/ha/{CB_MAC_LC}/humidifier_gear/state", "4")
+
+    # op-log ON
+    bus.apply_oplog(CB_MAC, [
+        {"id": 1, "epoch": 100, "devType": 27, "opType": 1, "modeType": 4}])
+    await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_humidifier").state == "on"
 
-    # op log OFF (opType 2) turns it off — the stop getDevSta never reports.
-    bus.apply_oplog(CB_MAC, [
-        {"id": 1, "epoch": 100, "devType": 27, "opType": 2, "modeType": 4}])
+    # A live frame in auto mode with a FIXED gear: `level` reads the gear (4) even
+    # though the unit is idle. It must NOT drive on/off — the op log owns it, so
+    # the tile stays "on" here (not flipped by the gear-pinned level).
+    session = ProxySession(CB_MAC, bus)
+    data = dict(CB_DATA)
+    data["humidifier"] = {"modeType": 4, "level": 4}   # fixed gear 4, idle
+    for _ in range(3):
+        _process_publish(session, _pkt(data), bus)
+    if session.initial_poll_task:
+        session.initial_poll_task.cancel()
     await hass.async_block_till_done()
-    assert hass.states.get("switch.sf_dp1_humidifier").state == "off"
+    assert hass.states.get("switch.sf_dp1_humidifier").state == "on"
 
-    # null heartbeat — not a transition; stays off.
+    # op-log OFF (bare mode entry = null) turns it off...
     bus.apply_oplog(CB_MAC, [
         {"id": 2, "epoch": 200, "devType": 27, "opType": None, "modeType": 4}])
     await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_humidifier").state == "off"
 
-    # op-log opType 1 must NOT turn it back on (no live frame says it's running).
-    bus.apply_oplog(CB_MAC, [
-        {"id": 3, "epoch": 300, "devType": 27, "opType": 1, "modeType": 4}])
+    # ...and the SAME gear-pinned live frame (level 4) must NOT turn it back on.
+    for _ in range(3):
+        _process_publish(session, _pkt(data), bus)
     await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_humidifier").state == "off"
 
-    # a LIVE frame with the humidifier running (on:1) is what turns it on.
-    _simulate_cb(bus)
+    # op-log ON again brings it back.
+    bus.apply_oplog(CB_MAC, [
+        {"id": 3, "epoch": 300, "devType": 27, "opType": 1, "modeType": 4}])
     await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_humidifier").state == "on"
+
+    # opType 2 = OFFLINE → off (and the offline attribute is set).
+    bus.apply_oplog(CB_MAC, [
+        {"id": 4, "epoch": 400, "devType": 27, "opType": 2, "modeType": 4}])
+    await hass.async_block_till_done()
+    h = hass.states.get("switch.sf_dp1_humidifier")
+    assert h.state == "off" and h.attributes.get("offline") is True
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
@@ -623,37 +669,93 @@ async def test_dehumidifier_onoff_from_oplog(hass: HomeAssistant):
     await hass.async_block_till_done()
 
 
-async def test_oplog_stale_on_never_flashes_heater(hass: HomeAssistant):
-    """v3.19.243: a getDevOpLog fetch often holds a stale opType-1 "on" (the last
-    actuation, e.g. while the heater is enabled-but-idle in Temperature mode). The
-    op log is OFF-only, so replaying that stale "on" must NEVER turn the tile on —
-    it would flicker against the live "off" every getDevSta frame. The heater's ON
-    comes only from a live frame with level>0."""
+async def test_oplog_offline_attribute(hass: HomeAssistant):
+    """v3.19.345: the op log's opType 2 is OFFLINE (the SF app's "Offline"), not
+    just "off" — confirmed for all three Environment accessories (26/27/25). The
+    newest non-alarm entry per accessory drives an ``offline`` attribute on the
+    active switch so the card can show "Offline" vs a plain idle "Off". It clears
+    when a newer entry (op 1 / null) arrives, and a water-tank alarm is ignored."""
     entry = await _setup(hass)
     bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
     session = _simulate_cb(bus)
     await hass.async_block_till_done()
-    assert hass.states.get("switch.sf_dp1_heater").state == "off"
 
-    # op log holds a stale opType-1 "on" (newest is a null heartbeat) — must NOT
-    # turn the tile on while the live level says it's idle.
+    def _off(eid):
+        return hass.states.get(eid).attributes.get("offline")
+
+    # Baseline: not offline.
+    assert _off("switch.sf_dp1_dehumidifier") is False
+    assert _off("switch.sf_dp1_humidifier") is False
+    assert _off("switch.sf_dp1_heater") is False
+
+    # opType 2 → OFFLINE for each accessory devType (26 dehum, 27 humid, 25 heat).
     bus.apply_oplog(CB_MAC, [
-        {"id": 2, "epoch": 200, "devType": 25, "opType": None, "modeType": 3},
-        {"id": 1, "epoch": 100, "devType": 25, "opType": 1, "modeType": 3}])
+        {"id": 1, "epoch": 100, "devType": 26, "opType": 2, "modeType": 4},
+        {"id": 2, "epoch": 100, "devType": 27, "opType": 2, "modeType": 4},
+        {"id": 3, "epoch": 100, "devType": 25, "opType": 2, "modeType": 3}])
     await hass.async_block_till_done()
-    assert hass.states.get("switch.sf_dp1_heater").state == "off"
+    assert _off("switch.sf_dp1_dehumidifier") is True
+    assert _off("switch.sf_dp1_humidifier") is True
+    assert _off("switch.sf_dp1_heater") is True
 
-    # a LIVE frame with the heater actually running (level>0) turns it on.
-    _process_publish(session, _pkt(
-        {**CB_DATA, "heater": {"level": 3, "modeType": 3}}), bus)
+    # A newer bare mode entry (opType null = plain off) clears offline.
+    bus.apply_oplog(CB_MAC, [
+        {"id": 4, "epoch": 200, "devType": 26, "opType": None, "modeType": 4},
+        {"id": 5, "epoch": 200, "devType": 27, "opType": None, "modeType": 4},
+        {"id": 6, "epoch": 200, "devType": 25, "opType": None, "modeType": 3}])
+    await hass.async_block_till_done()
+    assert _off("switch.sf_dp1_dehumidifier") is False
+    assert _off("switch.sf_dp1_humidifier") is False
+    assert _off("switch.sf_dp1_heater") is False
+
+    # Offline again, then a water-tank alarm is the newest entry — it must be
+    # ignored for offline (the newest NON-alarm entry, opType 2, still rules).
+    bus.apply_oplog(CB_MAC, [
+        {"id": 7, "epoch": 300, "devType": 26, "opType": 2, "modeType": 4},
+        {"id": 8, "epoch": 310, "devType": 26, "alarmType": 5}])
+    await hass.async_block_till_done()
+    assert _off("switch.sf_dp1_dehumidifier") is True
+
+    # opType 1 (on) clears offline.
+    bus.apply_oplog(CB_MAC, [
+        {"id": 9, "epoch": 400, "devType": 26, "opType": 1, "modeType": 4}])
+    await hass.async_block_till_done()
+    assert _off("switch.sf_dp1_dehumidifier") is False
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_heater_oplog_driven(hass: HomeAssistant):
+    """v3.19.347: with a FIXED gear the heater is OP-LOG driven (newest non-alarm
+    entry wins). opType 1 => ON, opType null (bare mode entry) => OFF, opType 2 =>
+    OFFLINE (off). The newest entry is the state (pushed in every getDevSta via
+    oplogLast)."""
+    entry = await _setup(hass)
+    bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
+    _simulate_cb(bus)
+    await hass.async_block_till_done()
+    # Fixed gear → op log owns the heater's on/off.
+    bus.publish(f"ggs/ha/{CB_MAC_LC}/heater_gear/state", "5")
+
+    # op-log ON
+    bus.apply_oplog(CB_MAC, [
+        {"id": 1, "epoch": 100, "devType": 25, "opType": 1, "modeType": 3}])
     await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_heater").state == "on"
 
-    # op log OFF (opType 2) is still honored — the auto-off the live frame misses.
+    # newer bare mode entry (opType null) = OFF
+    bus.apply_oplog(CB_MAC, [
+        {"id": 2, "epoch": 200, "devType": 25, "opType": None, "modeType": 3}])
+    await hass.async_block_till_done()
+    assert hass.states.get("switch.sf_dp1_heater").state == "off"
+
+    # opType 2 = OFFLINE → off (and the offline attribute is set)
     bus.apply_oplog(CB_MAC, [
         {"id": 3, "epoch": 300, "devType": 25, "opType": 2, "modeType": 3}])
     await hass.async_block_till_done()
-    assert hass.states.get("switch.sf_dp1_heater").state == "off"
+    h = hass.states.get("switch.sf_dp1_heater")
+    assert h.state == "off" and h.attributes.get("offline") is True
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
@@ -671,24 +773,40 @@ def test_decode_oplog_and_heater_devtype():
     assert events[0]["opType"] == 1 and events[1]["opType"] is None
 
 
-async def test_heater_onoff_from_live_level(hass: HomeAssistant):
-    """v3.19.243: the heater's running state comes from the LIVE getDevSta `level`
-    (level>0 = on, 0 = off — the controller DOES report the idle 0). The op log is
-    an OFF-only supplement (see test_oplog_stale_on_never_flashes_heater)."""
+async def test_climate_active_hybrid_by_gear(hass: HomeAssistant):
+    """v3.19.347: on/off source depends on the gear. AUTOMATIC gear → the live
+    `level` is the real running output (0 idle) and drives on/off instantly. FIXED
+    gear → the live `level` is pinned to the gear, so the op log owns on/off and a
+    live level>0 must NOT force the tile on."""
     entry = await _setup(hass)
     bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
     session = _simulate_cb(bus)
     await hass.async_block_till_done()
-    assert hass.states.get("switch.sf_dp1_heater").state == "off"
-    # live frame: heater running at level 4 -> on
+
+    # ── AUTOMATIC gear (default, none cached): live level drives on/off ──
+    # a live frame with the heater running at level 3 → on, straight from the frame
+    # (no op-log entry needed).
     _process_publish(session, _pkt(
-        {**CB_DATA, "heater": {"level": 4, "modeType": 3}}), bus)
+        {**CB_DATA, "heater": {"level": 3, "modeType": 3}}), bus)
     await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_heater").state == "on"
-    # live frame: idle level 0 -> off (the off the controller reports directly)
+    # idle level 0 → off, instantly.
     _process_publish(session, _pkt(
         {**CB_DATA, "heater": {"level": 0, "modeType": 3}}), bus)
     await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_heater").state == "off"
+
+    # ── FIXED gear: op log owns on/off; a gear-pinned live level must NOT turn on ──
+    bus.publish(f"ggs/ha/{CB_MAC_LC}/heater_gear/state", "4")
+    bus.apply_oplog(CB_MAC, [
+        {"id": 1, "epoch": 100, "devType": 25, "opType": None, "modeType": 3}])
+    await hass.async_block_till_done()
+    assert hass.states.get("switch.sf_dp1_heater").state == "off"
+    # live frame with level 4 (the fixed gear, idle) must NOT force it on.
+    _process_publish(session, _pkt(
+        {**CB_DATA, "heater": {"level": 4, "modeType": 3}}), bus)
+    await hass.async_block_till_done()
+    assert hass.states.get("switch.sf_dp1_heater").state == "off"
+
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

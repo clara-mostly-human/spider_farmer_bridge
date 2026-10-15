@@ -86,10 +86,13 @@ async def test_setup_and_cb_entities(hass: HomeAssistant):
 
     _simulate_cb(hass, bus)
     await hass.async_block_till_done()
-    # Dehumidifier on/off is op-log driven (v3.19.344): seed an op-log "off"
-    # (a bare mode entry = off) so its switch/active reflect a known state.
+    # On/off for all three accessories is op-log driven (v3.19.346): seed the op
+    # log so switch/active reflect known states — humidifier ON (opType 1), heater
+    # + dehumidifier OFF (bare mode entry = null).
     bus.apply_oplog(CB_MAC, [
-        {"id": 1, "epoch": 100, "devType": 26, "opType": None, "modeType": 4}])
+        {"id": 1, "epoch": 100, "devType": 27, "opType": 1, "modeType": 4},
+        {"id": 2, "epoch": 100, "devType": 25, "opType": None, "modeType": 3},
+        {"id": 3, "epoch": 100, "devType": 26, "opType": None, "modeType": 4}])
     await hass.async_block_till_done()
 
     # ── Exact entity IDs, exact states ────────────────────────────────────
@@ -133,8 +136,11 @@ async def test_setup_and_cb_entities(hass: HomeAssistant):
     assert hass.states.get("sensor.sf_dp1_humidifier_level").state == "2"
     assert hass.states.get("sensor.sf_dp1_humidifier_mode").state == "Environment"
     assert hass.states.get("binary_sensor.sf_dp1_dehumidifier_active").state == "off"
-    # level is the GEAR now (mLevel 1 → High), decoupled from on/off (v3.19.344)
-    assert hass.states.get("sensor.sf_dp1_dehumidifier_level").state == "High"
+    # The Low/High gear comes ONLY from the config `level` field (v3.19.349), which a
+    # live getDevSta frame doesn't carry — so from a live-only frame the entity exists
+    # but has no gear yet. (The config→gear mapping is covered by
+    # test_climate_config_frame_never_publishes_active.)
+    assert hass.states.get("sensor.sf_dp1_dehumidifier_level") is not None
     assert hass.states.get("binary_sensor.sf_dp1_heater_active").state == "off"
     assert hass.states.get("sensor.sf_dp1_heater_level").state == "0"
 
@@ -162,6 +168,40 @@ async def test_setup_and_cb_entities(hass: HomeAssistant):
     assert ent.unique_id == f"ggs_{CB_MAC_LC}_fan_gear"
     ent = reg.async_get("sensor.sf_dp1_humidifier_tank")
     assert ent.unique_id == f"ggs_{CB_MAC_LC}_humidifier_water"
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_blower_offline_attribute(hass: HomeAssistant):
+    """v3.19.346: the blower (devType 21) gets the op-log OFFLINE marker (opType 2)
+    exposed as an `offline` attribute on the fan entity — OFFLINE-ONLY, so its
+    on/off stays live-speed driven (the op log must NOT change the fan's state)."""
+    entry = await _setup(hass)
+    bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
+    _simulate_cb(hass, bus)
+    await hass.async_block_till_done()
+
+    blower = hass.states.get("fan.sf_dp1_blower")
+    assert blower is not None
+    # Live frame says the blower is running (mOnOff 1, mLevel 65) → on, not offline.
+    assert blower.state == "on"
+    assert blower.attributes.get("offline") is False
+
+    # op-log opType 2 = OFFLINE → the offline attribute flips on, but the fan's
+    # on/off is NOT touched by the op log (still live-driven).
+    bus.apply_oplog(CB_MAC, [
+        {"id": 10, "epoch": 500, "devType": 21, "opType": 2, "modeType": 3}])
+    await hass.async_block_till_done()
+    blower = hass.states.get("fan.sf_dp1_blower")
+    assert blower.attributes.get("offline") is True
+    assert blower.state == "on"   # live-driven on/off unchanged by the op log
+
+    # a newer entry (opType 1 / null) clears offline.
+    bus.apply_oplog(CB_MAC, [
+        {"id": 11, "epoch": 600, "devType": 21, "opType": 1, "modeType": 3}])
+    await hass.async_block_till_done()
+    assert hass.states.get("fan.sf_dp1_blower").attributes.get("offline") is False
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

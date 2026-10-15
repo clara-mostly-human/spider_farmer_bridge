@@ -111,14 +111,29 @@ class SfClimateSwitch(SfEntity, SwitchEntity):
     def __init__(self, bus: SfBus, d: SfDef) -> None:
         super().__init__(bus, d)
         self._attr_is_on = None
+        # OFFLINE flag (v3.19.345): the accessory reported Offline in the op log
+        # (opType 2) while its controller is still online — the SF app's "Offline".
+        # Exposed as an attribute so the card can show "Offline" vs a plain "Off".
+        self._attr_extra_state_attributes = {
+            **(self._attr_extra_state_attributes or {}), "offline": False,
+        }
 
     @property
     def state_topics(self) -> list[str]:
-        return [f"ggs/ha/{self.d.mac}/{self.d.field}_active/state"]
+        return [
+            f"ggs/ha/{self.d.mac}/{self.d.field}_active/state",
+            f"ggs/ha/{self.d.mac}/{self.d.field}_offline/state",
+        ]
 
     @callback
     def _handle_payload(self, topic: str, payload: str) -> None:
         payload = (payload or "").strip().upper()
+        if topic.endswith("_offline/state"):
+            self._attr_extra_state_attributes = {
+                **(self._attr_extra_state_attributes or {}),
+                "offline": payload == "ON",
+            }
+            return
         if payload in ("ON", "OFF"):
             self._attr_is_on = payload == "ON"
 

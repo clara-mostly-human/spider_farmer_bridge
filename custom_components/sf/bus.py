@@ -1980,59 +1980,67 @@ class SfBus:
             key=lambda x: (x.get("epoch") or 0, x.get("id") or 0), reverse=True,
         )[:50]
         self.publish(f"ggs/ha/{mac}/oplog/state", _json.dumps(merged))
-        # Drive the auto-mode heater/humidifier on/off from the op log. The
-        # controller reports these turning ON in getDevSta but NEVER reports the
-        # OFF there — only the op log records the stop (opType 1 = turned on,
-        # 2 = turned off; null = a mode/level change, not a transition). Take the
-        # newest real op entry per accessory devType. devTypes confirmed from the
-        # op log: 25 = Heater (Temperature), 27 = Humidification.
+        # Drive the Environment-accessory on/off from the op log (the SF-app
+        # Operation Log the controller pushes in EVERY getDevSta via `oplogLast`,
+        # so it is as live as a status frame — ~6 s). All three accessories —
+        # heater 25, dehumidifier 26, humidifier 27 — use ONE confirmed encoding:
+        # opType 1 = ON, opType null (bare mode entry) = OFF, opType 2 = OFFLINE
+        # (also off). The NEWEST non-alarm entry per accessory IS the current state.
         #
-        # The dehumidifier (26) IS op-log driven — with its OWN semantics, confirmed
-        # from a live op-log capture (v3.19.344). In Humidity mode the controller logs
-        # the dehumidifier turning ON as opType 1, but the turn-OFF as a bare mode
-        # entry (opType null, modeType present) — NOT opType 2, which is the "Offline"
-        # marker. It has no live running level (its getDevSta `level` is the Low/High
-        # GEAR), so the op log is the ONLY on/off signal. So it's read differently
-        # from the heater/humidifier: the NEWEST on/off-relevant entry is the current
-        # state — opType 1 => ON, anything else (null = off, opType-2 = offline) =>
-        # OFF. This replaces the config-`mOnOff` publish (removed from the normalizer)
-        # that fought the real state in auto mode, where mOnOff sits at 0 while the
-        # unit cycles. (It was wrongly excluded in v3.19.238 on the assumption the op
-        # log missed the turn-off.)
+        # Why op-log and NOT the live getDevSta `level` (v3.19.346): the live
+        # `level` is a reliable running output ONLY when the gear is Automatic (it
+        # reads 0 when idle). With a FIXED auto gear the controller pins `level` to
+        # the gear value even while idle — so level>0 is the GEAR, not "running",
+        # and reading on/off from it leaves the tile stuck "On" when the unit is
+        # actually off. (Confirmed live: humidifier gear 4 → live `level` 4 with the
+        # newest op entry opType null = off.) This is exactly the dehumidifier's
+        # case (its live `level` is always the Low/High gear), so heater/humidifier
+        # now match it: op-log driven, newest-entry-wins. Replaces the v3.19.243
+        # OFF-only + live-level-ON scheme, which mis-read fixed gears. The
+        # `_decode_heater`/`_decode_humidifier` live decoders and the config
+        # `mOnOff` publish no longer touch `{field}_active`. Blower/fan still run at
+        # a continuously reported speed, so they aren't op-log driven.
         #
-        # Heater (25) / Humidifier (27): OFF-ONLY. Their LIVE getDevSta `level` is
-        # authoritative for running right now (level>0 on, 0 off) and reports the idle
-        # 0, so the op log must NEVER turn one ON (a stale opType-1 would fight the
-        # live off and flicker ~6 s). The op log only supplies an OFF the live frame
-        # missed. Blower/fan run at a continuous level, so they aren't op-log driven.
-        # (v3.19.146, v3.19.243)
-        _OPLOG_ACTIVE = {25: "heater", 27: "humidifier"}
-        _op_seen: set = set()
-        _dehum_done = False
+        # Per-accessory OFFLINE (v3.19.345): opType 2 = OFFLINE (the SF app's
+        # literal "Offline"), surfaced as `{field}_offline` for the card's
+        # "Offline" tile. Self-clears when a newer entry (op 1 / null) arrives.
+        # ACTIVE accessories (25/26/27) are op-log driven for on/off AND offline.
+        # The blower (21) is OFFLINE-ONLY (v3.19.346): its live reported speed is a
+        # true running output (no gear-pinning), so on/off stays live-driven — the
+        # op log only adds the per-accessory "Offline" marker.
+        _ACTIVE = {25: "heater", 26: "dehumidifier", 27: "humidifier"}
+        _ALL = {**_ACTIVE, 21: "blower"}   # everything that gets offline tracking
+        _active_seen: set = set()  # active decided (newest non-alarm entry)
+        _off_seen: set = set()     # offline decided (newest non-alarm entry)
         for e in merged:   # newest first
             dev = e.get("devType")
-            if dev == 26:
-                # Newest on/off-relevant dehumidifier entry wins; skip pure
-                # water-tank alarms (alarmType set, not a run transition).
-                if _dehum_done or e.get("alarmType") is not None:
-                    continue
-                _dehum_done = True
-                on = e.get("opType") == 1
-                self.publish(f"ggs/ha/{mac}/dehumidifier_active/state",
-                             "ON" if on else "OFF")
+            field = _ALL.get(dev)
+            if field is None:
                 continue
-            field = _OPLOG_ACTIVE.get(dev)
-            if not field or field in _op_seen:
+            # Water-tank etc. alarms aren't run/offline transitions — skip them so
+            # the newest NON-alarm entry drives both active and offline.
+            if e.get("alarmType") is not None:
                 continue
-            # Only opType 1 (on) / 2 (off) are transitions; opType null is a
-            # mode/level change — skip it (don't read it as a turn-off).
             op = e.get("opType")
-            if op is None:
-                continue
-            _op_seen.add(field)
-            if int(op) == 1:
-                continue
-            self.publish(f"ggs/ha/{mac}/{field}_active/state", "OFF")
+            if field not in _off_seen:
+                _off_seen.add(field)
+                self.publish(f"ggs/ha/{mac}/{field}_offline/state",
+                             "ON" if op == 2 else "OFF")
+            if dev in _ACTIVE and field not in _active_seen:
+                _active_seen.add(field)
+                # Dehumidifier (26): op log is the ONLY on/off signal (its live
+                # `level` is just the Low/High gear). Heater/humidifier: op log
+                # drives on/off ONLY for a FIXED gear — with an Automatic gear the
+                # live decoder owns it from the real live level (responsive, no
+                # ~1-frame op-log lag), so we skip it here to avoid a laggy op-log
+                # value fighting the live one. (v3.19.347)
+                op_owns = True
+                if dev != 26:
+                    gear = self.cached(f"ggs/ha/{mac}/{field}_gear/state")
+                    op_owns = bool(gear) and gear != "Automatic"
+                if op_owns:
+                    self.publish(f"ggs/ha/{mac}/{field}_active/state",
+                                 "ON" if op == 1 else "OFF")
         for e in fresh:
             try:
                 self.hass.bus.async_fire("sf_oplog", {"mac": mac, **e})

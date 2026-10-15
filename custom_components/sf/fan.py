@@ -110,8 +110,29 @@ class SfBlower(_SfFanBase):
 
     _attr_supported_features = _base_features()
 
+    def __init__(self, bus: SfBus, d: SfDef) -> None:
+        super().__init__(bus, d)
+        # OFFLINE flag (v3.19.346): the blower reported Offline in the op log
+        # (opType 2) while its controller is online — the SF app's "Offline".
+        # On/off stays live-speed driven (the live speed is a true running output,
+        # no gear-pinning); the op log only supplies this offline marker, exposed
+        # as an attribute so the card can show "Offline" vs a plain "Off".
+        self._attr_extra_state_attributes = {
+            **(self._attr_extra_state_attributes or {}), "offline": False,
+        }
+
+    @property
+    def state_topics(self) -> list[str]:
+        return [self.d.state_topic, f"ggs/ha/{self.d.mac}/blower_offline/state"]
+
     @callback
     def _handle_payload(self, topic: str, payload: str) -> None:
+        if topic.endswith("_offline/state"):
+            self._attr_extra_state_attributes = {
+                **(self._attr_extra_state_attributes or {}),
+                "offline": (payload or "").strip().upper() == "ON",
+            }
+            return
         try:
             data = json.loads(payload)
         except (ValueError, TypeError):

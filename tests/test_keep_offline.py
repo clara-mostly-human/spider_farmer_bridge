@@ -127,6 +127,10 @@ async def test_offline_gear_survives_restart(hass: HomeAssistant):
     _report(bus, FULL_DATA)
     await hass.async_block_till_done()
     assert hass.states.get("sensor.sf_dp1_humidifier_level").state == "2"
+    # Humidifier on/off is op-log driven now (v3.19.346) — seed an op-log ON.
+    bus.apply_oplog(CB_MAC, [
+        {"id": 1, "epoch": 100, "devType": 27, "opType": 1, "modeType": 4}])
+    await hass.async_block_till_done()
     assert hass.states.get("switch.sf_dp1_humidifier").state == "on"
 
     await hass.config_entries.async_unload(entry.entry_id)

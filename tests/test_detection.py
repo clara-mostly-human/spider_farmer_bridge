@@ -423,7 +423,10 @@ async def test_evidence_based_groups_and_phantom_prune(hass: HomeAssistant):
     )
     _process_publish(session, pkt, bus)
     await hass.async_block_till_done()
-    assert hass.states.get("binary_sensor.sf_dp1_humidifier_active").state == "on"
+    # The humidifier group appears on evidence. (On/off is op-log driven now, so
+    # the active state is "unknown" until an op-log entry arrives — here we only
+    # assert the group was created.)
+    assert hass.states.get("binary_sensor.sf_dp1_humidifier_active") is not None
 
     if session.initial_poll_task:
         session.initial_poll_task.cancel()
