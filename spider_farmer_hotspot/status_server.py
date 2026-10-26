@@ -16,10 +16,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 OPTIONS = "/data/options.json"
 LEASES = "/data/dnsmasq.leases"
 # The Spider Farmer Bridge integration writes this map (mac -> friendly name)
-# into HA's /config, which this add-on mounts read-write. Current location is
-# /config/sf/ap; the bare /config path is the pre-3.x fallback.
-DEVICE_MAP = "/config/sf/ap/sf_hotspot_devices.json"
-DEVICE_MAP_LEGACY = "/config/sf_hotspot_devices.json"
+# into HA's config dir, which this add-on mounts read-write. With the modern
+# `homeassistant_config` map it mounts at /homeassistant (was /config under the
+# deprecated `config` map); we try each candidate so names keep working on either
+# mount, with the bare filename as the pre-3.x fallback. (add-on 0.8.6)
+DEVICE_MAP_CANDIDATES = [
+    "/homeassistant/sf/ap/sf_hotspot_devices.json",
+    "/homeassistant/sf_hotspot_devices.json",
+    "/config/sf/ap/sf_hotspot_devices.json",
+    "/config/sf_hotspot_devices.json",
+]
 PORT = int(os.environ.get("INGRESS_PORT", "8099"))
 
 
@@ -33,15 +39,19 @@ def opts():
 
 def device_names():
     """mac (lower, no separators) -> friendly name, from the integration.
-    Reads the current /config/sf/ap location, falling back to the legacy
-    /config path so names keep working if only one side has updated."""
-    try:
+    Reads whichever HA-config mount exists (/homeassistant now, /config legacy),
+    so names keep working across the map migration and location change."""
+    raw = None
+    for path in DEVICE_MAP_CANDIDATES:
         try:
-            with open(DEVICE_MAP) as f:
+            with open(path) as f:
                 raw = json.load(f)
-        except FileNotFoundError:
-            with open(DEVICE_MAP_LEGACY) as f:
-                raw = json.load(f)
+            break
+        except (FileNotFoundError, OSError):
+            continue
+    if raw is None:
+        return {}
+    try:
         out = {}
         for k, v in raw.items():
             mac = re.sub(r"[^0-9a-f]", "", str(k).lower())

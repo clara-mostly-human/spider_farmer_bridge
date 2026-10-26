@@ -4,6 +4,15 @@ All notable changes to the **Spider Farmer Hotspot** add-on. The Supervisor
 offers an update whenever the `version` in `config.yaml` increases; the notes
 below are shown on the add-on's Changelog tab.
 
+## 0.8.6
+
+- Clear Supervisor deprecation warnings: use the `homeassistant_config` map
+  instead of the deprecated `config` map, and drop the deprecated `armv7`/`armhf`
+  architectures (keeps `aarch64` + `amd64`).
+- The HA config dir now mounts at `/homeassistant` (was `/config`); the status
+  page reads the device-name map from either location, so controller names keep
+  showing across the change.
+
 ## 0.8.4
 
 - **New: `block_updates` option.** Off by default. Turn it on to blackhole the
