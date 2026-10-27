@@ -2007,7 +2007,9 @@ class SfBus:
         # ACTIVE accessories (25/26/27) are op-log driven for on/off AND offline.
         # The blower (21) is OFFLINE-ONLY (v3.19.346): its live reported speed is a
         # true running output (no gear-pinning), so on/off stays live-driven — the
-        # op log only adds the per-accessory "Offline" marker.
+        # op log only adds the per-accessory "Offline" marker. EXCEPTION (v3.19.371):
+        # on an unplug the controller drops the blower block from the live frame, so
+        # op-log OFFLINE (opType 2) also force-offs the fan tile (see below).
         _ACTIVE = {25: "heater", 26: "dehumidifier", 27: "humidifier"}
         _ALL = {**_ACTIVE, 21: "blower"}   # everything that gets offline tracking
         _active_seen: set = set()  # active decided (newest non-alarm entry)
@@ -2026,6 +2028,23 @@ class SfBus:
                 _off_seen.add(field)
                 self.publish(f"ggs/ha/{mac}/{field}_offline/state",
                              "ON" if op == 2 else "OFF")
+                if dev == 21 and op == 2:
+                    # Blower OFFLINE (v3.19.371): the blower is live-driven for
+                    # on/off (its reported speed is a true running output, so the
+                    # op log normally only adds the Offline marker). BUT on an
+                    # unplug the controller DROPS the blower block from the live
+                    # getDevSta frame entirely, so `_decode_blower` early-returns
+                    # and leaves a stale running state — the same failure mode as
+                    # the humidifier #82 null-block bug. Force the fan tile off to
+                    # match the Offline marker. Safe to force (no fighting the live
+                    # decoder) because the blower logs a recovery opType-1 entry
+                    # when it returns (confirmed from a live blower unplug
+                    # 2026-10-21: op2 13:00:17 → op1 13:02:53), so the newest entry
+                    # stops being op2, this branch no longer fires, and the live
+                    # decoder repopulates the real running state.
+                    self.publish(f"ggs/ha/{mac}/blower/state",
+                                 _json.dumps({"state": "OFF", "percentage": 0}))
+                    self.publish(f"ggs/ha/{mac}/blower_speed/state", "0")
             if dev in _ACTIVE and field not in _active_seen:
                 _active_seen.add(field)
                 # Dehumidifier (26): op log is the ONLY on/off signal (its live
@@ -2038,7 +2057,16 @@ class SfBus:
                 if dev != 26:
                     gear = self.cached(f"ggs/ha/{mac}/{field}_gear/state")
                     op_owns = bool(gear) and gear != "Automatic"
-                if op_owns:
+                if op == 2:
+                    # OFFLINE always means NOT running — force the tile off even for an
+                    # Automatic-gear accessory the op log otherwise wouldn't own. On an
+                    # unplug the controller sends `"<field>": null`, so the live decoder
+                    # early-returns and leaves a stale "On"; without this the humidifier
+                    # tile stayed On when its AC was pulled (#82). Pairs with
+                    # {field}_offline=ON above → the card shows "Offline".
+                    # (v3.19.370, confirmed from a live humidifier unplug 2026-10-21.)
+                    self.publish(f"ggs/ha/{mac}/{field}_active/state", "OFF")
+                elif op_owns:
                     self.publish(f"ggs/ha/{mac}/{field}_active/state",
                                  "ON" if op == 1 else "OFF")
         for e in fresh:

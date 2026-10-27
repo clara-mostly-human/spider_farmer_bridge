@@ -257,6 +257,36 @@ Editable offsets mirroring the SF app; edits write straight back to the controll
 | {Probe} EC Calibration | `soilN_cal_ec` | number | Soil-EC offset (mS/cm). |
 | {Probe} Substrate | `soilN_substrate` | select | Clay soil / Coco coir / Peat soil (**Pro probes only**). |
 
+## Time-lapse
+
+**Multi-instance (v3.19.362).** Each camera is its own independent time-lapse
+*instance*, identified by a slug `tl_id` (a slug of the card's name, or of the camera
+when the name is blank). Everything is configured **from the Spider Time-lapse Card**,
+not the integration options — add a card, name it (optional), and pick its camera; drop
+another card with a different name for a second camera. Each instance captures a
+`camera.*` entity on an interval into its own secure, user-chosen folder (default
+`/media/sf_timelapse/<tl_id>`; a web-served `/www` path is refused), and the card
+scrubs/plays its frames and exports an `.mp4`. Frames and the exported video are served
+only through an authenticated endpoint via short-lived **signed URLs** (never a public
+path). Each instance resumes its **own session** after a Home Assistant restart.
+
+| Entity | Suffix | Domain | Description |
+| --- | --- | --- | --- |
+| SF Timelapse {name} | `timelapse_<tl_id>` | sensor | One per instance. Capture status; state = `capturing` / `idle`. Attributes: `tl_id`, `name`, `label`, `camera`, `storage_dir`, `session`, `interval_s`, `retention_days`, `frame_count`, `last_capture`, `last_error`, `export_running`, `last_export`, `last_export_error`, `overlay`, `overlay_burn`, `overlay_panel`, `overlay_fields`, `overlay_color`, `overlay_grouped`, `overlay_pos`, `overlay_orient`, `overlay_labels`, `align`, `daily_at`, `next_capture`. Removed when its card/instance is deleted. |
+
+**Services** — all take an optional `tl_id` to pick the instance (omit it to target the
+first/only one).
+
+| Service | Fields | Description |
+| --- | --- | --- |
+| `sf.timelapse_configure` | `tl_id?`, `name?`, `label?`, `camera?`, `storage_dir?`, `interval?`, `retention?`, `enabled?`, `overlay?`, `overlay_burn?`, `overlay_panel?`, `overlay_fields?`, `overlay_color?`, `overlay_grouped?`, `overlay_pos?` | Create or update one instance (a new `tl_id` creates it). Storage is validated; `/www` is refused. `label` is an optional short display name shown in the card header; blank falls back to the camera's friendly name (it never changes the `tl_id`). `overlay_color` is a hex string; `overlay_grouped` stacks all readings in one box (in selection order) vs. per-field placement; `overlay_pos` is `{field|"group": [xPct, yPct]}` anchor positions; `overlay_orient` is `"v"` (stacked) or `"h"` (one row) for the grouped box; `overlay_labels` false shows values only; `align` false captures immediately vs. on the clock mark; `daily_at` (`"HH:MM"`) sets the time-of-day for a 1-day interval. Overlay fields include `temp, humidity, vpd, co2, ppfd, timestamp, day` (grow-day counter). This is what the card's editor + ⚙ settings call. |
+| `sf.timelapse_remove` | `tl_id`, `delete_images?` | Delete an instance (stops capture, drops its status sensor and clears its registry entry). With `delete_images` true, its captured frames/sessions/exports folder is deleted too. (The card's 🗑 instead calls `timelapse_clear` then `timelapse_remove` for compatibility with older backends.) |
+| `sf.timelapse_start` | `tl_id?`, `session?`, `interval?` | Start/resume capture (new session, or continue a named one). |
+| `sf.timelapse_stop` | `tl_id?` | Stop capture (clears that instance's resume intent). |
+| `sf.timelapse_set_interval` | `tl_id?`, `interval` | Change the capture interval (seconds). |
+| `sf.timelapse_export` | `tl_id?`, `session?`, `fps?`, `name?` | Render a session's frames to an `.mp4` (ffmpeg) in that instance's folder. |
+| `sf.timelapse_clear` | `tl_id?` | Delete **all** images, sessions and exports for the instance (keeps the instance; resumes into a fresh session if it was capturing). The card's **Delete all images** button calls this. |
+
 ## Internal / hidden
 
 The integration uses hidden per-device write-channel (`*_apply`) text entities to

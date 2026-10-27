@@ -13,6 +13,13 @@ below are shown on the add-on's Changelog tab.
   page reads the device-name map from either location, so controller names keep
   showing across the change.
 
+## 0.8.5
+
+- **Fix: the add-on reported the wrong version at startup.** `run.sh` had a hard-coded
+  `ADDON_VERSION` still reading `0.6.7`, so the startup log and status page showed a stale
+  version even though the add-on was up to date. It now matches `config.yaml`. No behaviour
+  change — hotspot, DNS/DHCP, the :8883 redirect and the update-blocking option are unchanged.
+
 ## 0.8.4
 
 - **New: `block_updates` option.** Off by default. Turn it on to blackhole the

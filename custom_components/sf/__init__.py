@@ -156,6 +156,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_PROXY: proxy,
     }
 
+    # ── Time-lapse: camera capture → secure storage; card scrubs/exports. ──
+    # Created before platforms so the status sensor can find it. Never let this
+    # optional subsystem break core bridge setup. (v3.19.358)
+    timelapse = None
+    try:
+        from .timelapse import TimelapseManager
+        from .timelapse_http import async_register_timelapse_http
+        # Fold any legacy single-time-lapse options into one instance (keeps its
+        # folder + running session). Safe here: runs before the update listener is
+        # attached, so it can't re-enter setup. (v3.19.362)
+        await _migrate_timelapse_options(hass, entry)
+        # Move any EMPTY instance off the shared /media/sf_timelapse root into its own
+        # per-instance subfolder, so multiple cameras never pour frames into one folder
+        # (and the old shared folder isn't "retained"). Only when it has no frames.
+        await _tidy_timelapse_dirs(hass, entry)
+        timelapse = TimelapseManager(hass, entry)
+        timelapse.sync()
+        hass.data[DOMAIN][entry.entry_id]["timelapse"] = timelapse
+        async_register_timelapse_http(hass)
+    except Exception:  # noqa: BLE001 - optional feature must not block the bridge
+        _LOGGER.exception("Time-lapse setup failed; continuing without it")
+
     # ── Platforms first, so entity listeners exist before any device data ──
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -197,6 +219,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _recheck_cards)
     )
+
+    # Auto-start time-lapse capture once HA is fully up (the camera entity must
+    # exist first). Stop cleanly on unload. (v3.19.358)
+    if timelapse is not None:
+        async def _start_timelapse(_event=None) -> None:
+            # Resume the persisted session for every instance that was capturing
+            # before the reboot (keeps each continuous); first run falls back to
+            # each instance's 'enabled' flag.
+            await timelapse.async_restore_all()
+
+        if hass.is_running:
+            hass.async_create_task(_start_timelapse())
+        else:
+            entry.async_on_unload(
+                hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_timelapse)
+            )
+        entry.async_on_unload(timelapse.cancel_all)
 
     # ── TLS server context (blocking load in executor) ────────────────────
     def _build_ssl_ctx():
@@ -1038,6 +1077,322 @@ def _async_register_services(hass: HomeAssistant) -> None:
             DOMAIN, "set_outlet_env", _set_outlet_env,
             schema=_OUTLET_ENV_SCHEMA)
 
+    # ── Time-lapse capture controls (v3.19.362: per-instance, keyed by tl_id) ──
+    async def _timelapse_start(call):
+        ctrl = _tl_controller(hass, call.data.get("tl_id"))
+        if ctrl is not None:
+            await ctrl.async_start(
+                session=call.data.get("session") or None,
+                interval=call.data.get("interval"))
+
+    async def _timelapse_stop(call):
+        ctrl = _tl_controller(hass, call.data.get("tl_id"))
+        if ctrl is not None:
+            await ctrl.async_stop()
+
+    async def _timelapse_set_interval(call):
+        ctrl = _tl_controller(hass, call.data.get("tl_id"))
+        if ctrl is not None:
+            await ctrl.async_set_interval(int(call.data["interval"]))
+
+    async def _timelapse_export(call):
+        ctrl = _tl_controller(hass, call.data.get("tl_id"))
+        if ctrl is not None:
+            await ctrl.async_export(
+                session=call.data.get("session") or None,
+                fps=call.data.get("fps"),
+                name=call.data.get("name") or None)
+
+    async def _timelapse_configure(call):
+        """Card-driven settings for ONE instance. The card supplies tl_id (a slug of
+        the card's name, or the camera when blank); the instance is CREATED if it
+        doesn't exist yet, so dropping a card with a new name adds a time-lapse. The
+        fields are merged into that instance's options dict (validated), the manager
+        reconciles its controllers, and the instance is applied live."""
+        mgr = _tl_manager(hass)
+        if mgr is None:
+            return
+        from .config_flow import (
+            _normalize_timelapse_dir, _is_blocked_timelapse_dir, _timelapse_dir_writable)
+        from .const import (
+            CONF_TIMELAPSE_INSTANCES, slug_timelapse_id,
+            TL_NAME, TL_LABEL, TL_CAMERA, TL_DIR, TL_INTERVAL, TL_RETENTION, TL_ENABLED,
+            TL_OVERLAY, TL_OVERLAY_BURN, TL_OVERLAY_PANEL, TL_OVERLAY_FIELDS,
+            TL_OVERLAY_COLOR, TL_OVERLAY_GROUPED, TL_OVERLAY_POS, TL_OVERLAY_ORIENT,
+            TL_OVERLAY_LABELS, TL_OVERLAY_FONT, TL_ALIGN, TL_DAILY_AT)
+        d = call.data
+        entry = mgr.entry
+        # Resolve which instance: explicit tl_id, else a slug of name-or-camera.
+        tl_id = d.get("tl_id")
+        if not tl_id:
+            tl_id = slug_timelapse_id(d.get("name") or d.get("camera") or "")
+        tl_id = slug_timelapse_id(tl_id)
+        opts = dict(entry.options or {})
+        insts = dict(opts.get(CONF_TIMELAPSE_INSTANCES) or {})
+        inst = dict(insts.get(tl_id) or {})
+        if "name" in d and d["name"]:
+            inst[TL_NAME] = str(d["name"])
+        inst.setdefault(TL_NAME, tl_id)
+        # Display name (header). Present-but-empty clears it → card falls back to
+        # the camera's friendly name. Does NOT affect tl_id (that stays on TL_NAME).
+        if "label" in d:
+            inst[TL_LABEL] = str(d["label"] or "")
+        if "camera" in d:
+            inst[TL_CAMERA] = d["camera"]
+        if "storage_dir" in d:
+            path = _normalize_timelapse_dir(str(d["storage_dir"]))
+            if not path or _is_blocked_timelapse_dir(path):
+                _LOGGER.warning("Time-lapse: refused insecure storage dir %r", d["storage_dir"])
+                return
+            if not await hass.async_add_executor_job(_timelapse_dir_writable, path):
+                _LOGGER.warning("Time-lapse: storage dir not writable: %s", path)
+                return
+            inst[TL_DIR] = path
+        if "interval" in d:
+            inst[TL_INTERVAL] = int(d["interval"])
+        if "retention" in d:
+            inst[TL_RETENTION] = int(d["retention"])
+        if "enabled" in d:
+            inst[TL_ENABLED] = bool(d["enabled"])
+        if "overlay" in d:
+            inst[TL_OVERLAY] = bool(d["overlay"])
+        if "overlay_burn" in d:
+            inst[TL_OVERLAY_BURN] = bool(d["overlay_burn"])
+        if "overlay_panel" in d:
+            inst[TL_OVERLAY_PANEL] = str(d["overlay_panel"])
+        if "overlay_fields" in d:
+            inst[TL_OVERLAY_FIELDS] = list(d["overlay_fields"])
+        if "overlay_color" in d:
+            inst[TL_OVERLAY_COLOR] = str(d["overlay_color"])
+        if "overlay_grouped" in d:
+            inst[TL_OVERLAY_GROUPED] = bool(d["overlay_grouped"])
+        if "overlay_pos" in d:
+            inst[TL_OVERLAY_POS] = dict(d["overlay_pos"] or {})
+        if "overlay_orient" in d:
+            inst[TL_OVERLAY_ORIENT] = str(d["overlay_orient"])
+        if "overlay_labels" in d:
+            inst[TL_OVERLAY_LABELS] = bool(d["overlay_labels"])
+        if "overlay_font" in d:
+            inst[TL_OVERLAY_FONT] = float(d["overlay_font"])
+        if "align" in d:
+            inst[TL_ALIGN] = bool(d["align"])
+        if "daily_at" in d:
+            inst[TL_DAILY_AT] = str(d["daily_at"])
+        insts[tl_id] = inst
+        opts[CONF_TIMELAPSE_INSTANCES] = insts
+        hass.config_entries.async_update_entry(entry, options=opts)
+        # Reconcile controllers to the new instances set, tell the sensor platform,
+        # then apply this instance live (start/stop/restart to match).
+        mgr.sync()
+        mgr.notify_instances()
+        ctrl = mgr.get(tl_id)
+        if ctrl is not None:
+            await ctrl.async_apply_config()
+
+    async def _timelapse_clear(call):
+        ctrl = _tl_controller(hass, call.data.get("tl_id"))
+        if ctrl is not None:
+            await ctrl.async_clear()
+
+    async def _timelapse_remove(call):
+        """Delete an instance entirely (stops capture, forgets its session, drops
+        its status sensor). With delete_images=True (the card's default), its captured
+        frames/sessions/exports folder is deleted too so re-adding the same camera
+        starts clean — no manual folder deletion. (v3.19.373)"""
+        mgr = _tl_manager(hass)
+        if mgr is None:
+            return
+        from .const import CONF_TIMELAPSE_INSTANCES, slug_timelapse_id
+        tl_id = slug_timelapse_id(call.data["tl_id"])
+        entry = mgr.entry
+        opts = dict(entry.options or {})
+        insts = dict(opts.get(CONF_TIMELAPSE_INSTANCES) or {})
+        if tl_id not in insts:
+            return
+        # Delete images BEFORE dropping the controller (we need its root path).
+        if call.data.get("delete_images"):
+            ctrl = mgr.get(tl_id)
+            if ctrl is not None:
+                try:
+                    await ctrl.async_clear()
+                except Exception:  # noqa: BLE001 - best-effort; still remove the instance
+                    _LOGGER.warning("Time-lapse remove: image delete failed for %s", tl_id)
+        insts.pop(tl_id, None)
+        opts[CONF_TIMELAPSE_INSTANCES] = insts
+        hass.config_entries.async_update_entry(entry, options=opts)
+        mgr.sync()
+        mgr.notify_instances()
+
+    if not hass.services.has_service(DOMAIN, "timelapse_start"):
+        hass.services.async_register(
+            DOMAIN, "timelapse_start", _timelapse_start,
+            schema=vol.Schema({vol.Optional("tl_id"): cv.string,
+                               vol.Optional("session"): cv.string,
+                               vol.Optional("interval"): vol.Coerce(int)}))
+    if not hass.services.has_service(DOMAIN, "timelapse_stop"):
+        hass.services.async_register(
+            DOMAIN, "timelapse_stop", _timelapse_stop,
+            schema=vol.Schema({vol.Optional("tl_id"): cv.string}))
+    if not hass.services.has_service(DOMAIN, "timelapse_set_interval"):
+        hass.services.async_register(
+            DOMAIN, "timelapse_set_interval", _timelapse_set_interval,
+            schema=vol.Schema({vol.Optional("tl_id"): cv.string,
+                               vol.Required("interval"): vol.Coerce(int)}))
+    if not hass.services.has_service(DOMAIN, "timelapse_export"):
+        hass.services.async_register(
+            DOMAIN, "timelapse_export", _timelapse_export,
+            schema=vol.Schema({vol.Optional("tl_id"): cv.string,
+                               vol.Optional("session"): cv.string,
+                               vol.Optional("fps"): vol.Coerce(int),
+                               vol.Optional("name"): cv.string}))
+    if not hass.services.has_service(DOMAIN, "timelapse_configure"):
+        hass.services.async_register(
+            DOMAIN, "timelapse_configure", _timelapse_configure,
+            schema=vol.Schema({
+                vol.Optional("tl_id"): cv.string,
+                vol.Optional("name"): cv.string,
+                vol.Optional("label"): cv.string,
+                vol.Optional("camera"): cv.string,
+                vol.Optional("storage_dir"): cv.string,
+                vol.Optional("interval"): vol.Coerce(int),
+                vol.Optional("retention"): vol.Coerce(int),
+                vol.Optional("enabled"): cv.boolean,
+                vol.Optional("overlay"): cv.boolean,
+                vol.Optional("overlay_burn"): cv.boolean,
+                vol.Optional("overlay_panel"): cv.string,
+                vol.Optional("overlay_fields"): vol.All(cv.ensure_list, [cv.string]),
+                vol.Optional("overlay_color"): cv.string,
+                vol.Optional("overlay_grouped"): cv.boolean,
+                vol.Optional("overlay_pos"): dict,
+                vol.Optional("overlay_orient"): cv.string,
+                vol.Optional("overlay_labels"): cv.boolean,
+                vol.Optional("overlay_font"): vol.Coerce(float),
+                vol.Optional("align"): cv.boolean,
+                vol.Optional("daily_at"): cv.string,
+            }))
+    if not hass.services.has_service(DOMAIN, "timelapse_clear"):
+        hass.services.async_register(
+            DOMAIN, "timelapse_clear", _timelapse_clear,
+            schema=vol.Schema({vol.Optional("tl_id"): cv.string}))
+    if not hass.services.has_service(DOMAIN, "timelapse_remove"):
+        hass.services.async_register(
+            DOMAIN, "timelapse_remove", _timelapse_remove,
+            schema=vol.Schema({vol.Required("tl_id"): cv.string,
+                               vol.Optional("delete_images"): cv.boolean}))
+
+
+def _tl_manager(hass):
+    """First configured time-lapse manager (single config entry)."""
+    for data in (hass.data.get(DOMAIN) or {}).values():
+        if isinstance(data, dict) and data.get("timelapse") is not None:
+            return data["timelapse"]
+    return None
+
+
+def _tl_controller(hass, tl_id=None):
+    """A specific instance's controller (or the first when tl_id is omitted)."""
+    mgr = _tl_manager(hass)
+    return mgr.get(tl_id) if mgr is not None else None
+
+
+def _any_timelapse(hass):
+    """Back-compat: the first time-lapse controller across all instances."""
+    return _tl_controller(hass, None)
+
+
+def _norm_dir(p: str) -> str:
+    return (str(p or "")).replace("\\", "/").rstrip("/")
+
+
+async def _tidy_timelapse_dirs(hass, entry) -> None:
+    """Repoint any instance still on the bare shared `/media/sf_timelapse` root to its
+    own `/media/sf_timelapse/<tl_id>` subfolder — but ONLY when that root holds no
+    frames for it, so an in-progress migrated time-lapse is never disturbed. This
+    stops the old shared folder being 'retained' and prevents two cameras sharing one
+    folder (which would intermix their sessions). (v3.19.365)"""
+    from .const import CONF_TIMELAPSE_INSTANCES, DEFAULT_TIMELAPSE_DIR, TL_DIR
+    from .timelapse import list_sessions
+    opts = dict(entry.options or {})
+    insts = dict(opts.get(CONF_TIMELAPSE_INSTANCES) or {})
+    if not insts:
+        return
+    shared = _norm_dir(DEFAULT_TIMELAPSE_DIR)
+    changed = False
+    for tl_id, inst in list(insts.items()):
+        if _norm_dir(inst.get(TL_DIR) or "") != shared:
+            continue
+        try:
+            sessions = await hass.async_add_executor_job(list_sessions, DEFAULT_TIMELAPSE_DIR)
+        except Exception:  # noqa: BLE001
+            sessions = [1]  # be conservative — don't move if we can't tell
+        if sessions:
+            continue
+        inst = dict(inst)
+        inst[TL_DIR] = f"{DEFAULT_TIMELAPSE_DIR}/{tl_id}"
+        insts[tl_id] = inst
+        changed = True
+        _LOGGER.info("Time-lapse %s: moved off shared root → %s", tl_id, inst[TL_DIR])
+    if changed:
+        opts[CONF_TIMELAPSE_INSTANCES] = insts
+        hass.config_entries.async_update_entry(entry, options=opts)
+
+
+async def _migrate_timelapse_options(hass, entry) -> None:
+    """One-time: fold the legacy single-time-lapse top-level options into one
+    instance under CONF_TIMELAPSE_INSTANCES, preserving its folder + running
+    session so the update doesn't fragment or stop an in-progress time-lapse."""
+    from .const import (
+        CONF_TIMELAPSE_INSTANCES, CONF_TIMELAPSE_CAMERA, CONF_TIMELAPSE_DIR,
+        CONF_TIMELAPSE_INTERVAL, CONF_TIMELAPSE_RETENTION, CONF_TIMELAPSE_ENABLED,
+        CONF_TIMELAPSE_OVERLAY, CONF_TIMELAPSE_OVERLAY_BURN, CONF_TIMELAPSE_OVERLAY_PANEL,
+        CONF_TIMELAPSE_OVERLAY_FIELDS, DEFAULT_TIMELAPSE_DIR, DEFAULT_TIMELAPSE_INTERVAL,
+        DEFAULT_TIMELAPSE_RETENTION, DEFAULT_TIMELAPSE_OVERLAY_FIELDS, slug_timelapse_id,
+        TL_NAME, TL_CAMERA, TL_DIR, TL_INTERVAL, TL_RETENTION, TL_ENABLED,
+        TL_OVERLAY, TL_OVERLAY_BURN, TL_OVERLAY_PANEL, TL_OVERLAY_FIELDS)
+    opts = dict(entry.options or {})
+    if CONF_TIMELAPSE_INSTANCES in opts:
+        return  # already migrated (or born multi-instance)
+    merged = {**entry.data, **opts}
+    cam = merged.get(CONF_TIMELAPSE_CAMERA)
+    has_legacy = bool(cam or merged.get(CONF_TIMELAPSE_DIR)
+                      or merged.get(CONF_TIMELAPSE_ENABLED))
+    if not has_legacy:
+        opts[CONF_TIMELAPSE_INSTANCES] = {}
+        hass.config_entries.async_update_entry(entry, options=opts)
+        return
+    tl_id = slug_timelapse_id(cam or "timelapse")
+    name = ""
+    if cam:
+        st = hass.states.get(cam)
+        name = (st.attributes.get("friendly_name") if st else "") or cam.split(".")[-1]
+    inst = {
+        TL_NAME: name or tl_id,
+        TL_CAMERA: cam or "",
+        # KEEP the legacy folder exactly — existing frames stay reachable. (New
+        # instances default to /media/sf_timelapse/<tl_id>; the legacy one didn't.)
+        TL_DIR: merged.get(CONF_TIMELAPSE_DIR) or DEFAULT_TIMELAPSE_DIR,
+        TL_INTERVAL: int(merged.get(CONF_TIMELAPSE_INTERVAL, DEFAULT_TIMELAPSE_INTERVAL)),
+        TL_RETENTION: int(merged.get(CONF_TIMELAPSE_RETENTION, DEFAULT_TIMELAPSE_RETENTION)),
+        TL_ENABLED: bool(merged.get(CONF_TIMELAPSE_ENABLED, False)),
+        TL_OVERLAY: bool(merged.get(CONF_TIMELAPSE_OVERLAY, False)),
+        TL_OVERLAY_BURN: bool(merged.get(CONF_TIMELAPSE_OVERLAY_BURN, False)),
+        TL_OVERLAY_PANEL: merged.get(CONF_TIMELAPSE_OVERLAY_PANEL, "") or "",
+        TL_OVERLAY_FIELDS: list(merged.get(CONF_TIMELAPSE_OVERLAY_FIELDS,
+                                           DEFAULT_TIMELAPSE_OVERLAY_FIELDS)),
+    }
+    opts[CONF_TIMELAPSE_INSTANCES] = {tl_id: inst}
+    hass.config_entries.async_update_entry(entry, options=opts)
+    # Carry the legacy persisted intent/session onto the per-instance store so the
+    # migrated time-lapse resumes the SAME session after this update.
+    try:
+        from homeassistant.helpers.storage import Store
+        legacy = Store(hass, 1, f"sf_timelapse_{entry.entry_id}")
+        data = await legacy.async_load()
+        if data:
+            await Store(hass, 1, f"sf_timelapse_{entry.entry_id}_{tl_id}").async_save(data)
+    except Exception:  # noqa: BLE001 - resume is best-effort
+        pass
+
 
 def _integration_version() -> str:
     """Read this integration's version from its manifest."""
@@ -1136,6 +1491,14 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         bus.apply_smart_control(cfg.get(CONF_SMART_CONTROL) or {})
         # Env outlet control — apply live so an outlet mode change takes effect.
         bus.apply_outlet_env(cfg.get(CONF_OUTLET_ENV) or {})
+    # Time-lapse: reconcile controllers to the instances set live (add/remove
+    # cards). The configure service already applies the instance it changed; this
+    # only keeps the controller set + status sensors in step for any other writer.
+    # It never re-applies (restarts) existing captures, so unrelated option writes
+    # (PPFD autosave, card_options) can't disturb a running time-lapse. (v3.19.362)
+    mgr = data.get("timelapse")
+    if mgr is not None and mgr.sync():
+        mgr.notify_instances()
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

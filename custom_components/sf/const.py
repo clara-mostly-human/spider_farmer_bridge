@@ -49,6 +49,74 @@ CONF_DIAG_DAYS     = "diagnostic_log_days"
 CONF_DIAG_PER_BOOT = "diagnostic_log_per_boot"
 DEFAULT_DIAG_DAYS  = 7                             # daily files kept, 1-30
 CONF_INSTALL_CARD  = "install_lovelace_card"       # opt-in bundled Lovelace card
+
+# Time-lapse (v3.19.358+). Capture a camera.* entity on an interval into a SECURE,
+# user-chosen folder; scrub/export from the card. NEVER under /config/www (served
+# unauthenticated). See _backlog_private/TIMELAPSE_DESIGN.md.
+CONF_TIMELAPSE_CAMERA    = "timelapse_camera"       # camera.* entity to snapshot
+CONF_TIMELAPSE_DIR       = "timelapse_dir"          # storage root (absolute path)
+CONF_TIMELAPSE_INTERVAL  = "timelapse_interval"     # seconds between frames
+CONF_TIMELAPSE_RETENTION = "timelapse_retention"    # days of frames to keep
+CONF_TIMELAPSE_ENABLED   = "timelapse_enabled"      # capture on/off
+DEFAULT_TIMELAPSE_DIR      = "/media/sf_timelapse"
+DEFAULT_TIMELAPSE_INTERVAL = 300                    # 5 min
+DEFAULT_TIMELAPSE_RETENTION = 7                     # days
+# Phase 3 overlay — burn selected SF env readings onto each frame at capture (so the
+# exported video carries them; each frame shows the data from when it was taken).
+CONF_TIMELAPSE_OVERLAY        = "timelapse_overlay"          # on/off
+CONF_TIMELAPSE_OVERLAY_BURN   = "timelapse_overlay_burn"     # burn into frames/video vs card-only
+CONF_TIMELAPSE_OVERLAY_PANEL  = "timelapse_overlay_panel"    # dp1/dp2/... to read env from
+CONF_TIMELAPSE_OVERLAY_FIELDS = "timelapse_overlay_fields"   # list: temp,humidity,vpd,co2,ppfd,timestamp
+DEFAULT_TIMELAPSE_OVERLAY_FIELDS = ["temp", "humidity", "vpd", "timestamp"]
+DEFAULT_TIMELAPSE_OVERLAY_COLOR = "#ffffff"
+# Paths we refuse as a time-lapse root (served unauthenticated at /local/...).
+TIMELAPSE_BLOCKED_ROOTS = ("/config/www", "/www", "config/www", "www")
+
+# Multi-instance (v3.19.362+): each camera/time-lapse is an independent instance
+# keyed by a stable slug (tl_id). One card = one instance (named in the card, with a
+# camera-derived default when left blank). The options dict:
+#   options[CONF_TIMELAPSE_INSTANCES] = {
+#       tl_id: {name, camera, dir, interval, retention, enabled,
+#               overlay, overlay_burn, overlay_panel, overlay_fields}
+#   }
+# The legacy single-time-lapse top-level keys above are migrated into one instance on
+# first setup of this version (see _migrate_timelapse_options in __init__.py).
+CONF_TIMELAPSE_INSTANCES = "timelapse_instances"
+# Per-instance config dict keys (kept short; distinct from the legacy CONF_* keys).
+TL_NAME = "name"                          # instance name (drives tl_id slug — DON'T change for display)
+TL_LABEL = "label"                        # optional display name for the card header; blank ⇒ card falls back to the camera's friendly name
+TL_CAMERA = "camera"
+TL_DIR = "dir"
+TL_INTERVAL = "interval"
+TL_RETENTION = "retention"
+TL_ENABLED = "enabled"
+TL_OVERLAY = "overlay"
+TL_OVERLAY_BURN = "overlay_burn"
+TL_OVERLAY_PANEL = "overlay_panel"
+TL_OVERLAY_FIELDS = "overlay_fields"
+TL_OVERLAY_COLOR = "overlay_color"        # hex text colour, e.g. "#ffffff"
+TL_OVERLAY_GROUPED = "overlay_grouped"    # True = one box; False = place each field
+TL_OVERLAY_POS = "overlay_pos"            # {field|"group": [xPct, yPct]} anchor positions
+TL_OVERLAY_ORIENT = "overlay_orient"      # grouped layout: "v" (stacked) or "h" (one row)
+TL_ALIGN = "align"                        # True: first frame on the next clock mark;
+                                          # False: capture immediately, then every interval
+TL_OVERLAY_LABELS = "overlay_labels"      # True: "Temp 72°F"; False: just "72°F" (less on screen)
+TL_OVERLAY_FONT = "overlay_font"          # overlay text size multiplier (1.0 = default)
+TL_DAILY_AT = "daily_at"                  # "HH:MM" time-of-day for a 1-day interval capture
+
+
+def slug_timelapse_id(value: str) -> str:
+    """Stable, filesystem/URL-safe id for a time-lapse instance, derived from the
+    user's name (or a camera entity id when the name is blank). Lowercase, with
+    non-alphanumeric runs collapsed to a single underscore. MUST stay in lockstep
+    with the card's _slugId() so the card and backend agree on the key."""
+    import re
+    s = (value or "").strip().lower()
+    if s.startswith("camera."):
+        s = s[len("camera."):]
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    return s or "timelapse"
+
 DATA_PROXY_TASK = "proxy_task"
 DATA_PROXY      = "proxy"
 DATA_BUS        = "bus"

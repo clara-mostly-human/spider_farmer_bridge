@@ -68,6 +68,17 @@
           "old_probe": "Old probe (being replaced)",
           "new_probe": "New probe (replacement)"
         }
+      },
+      "timelapse": {
+        "title": "Time-lapse",
+        "description": "Capture a camera on an interval into a secure folder, then scrub/export it from the card. Pick a private storage path — never a /www folder (those are served without a login). Default: {default_dir}. A path under /media also shows the exported video in Home Assistant's media browser.",
+        "data": {
+          "timelapse_camera": "Camera to capture",
+          "timelapse_dir": "Storage folder (secure — not /www)",
+          "timelapse_interval": "Capture interval (seconds)",
+          "timelapse_retention": "Keep frames for (days)",
+          "timelapse_enabled": "Enable time-lapse capture"
+        }
       }
     },
     "error": {
@@ -79,7 +90,10 @@
       "duplicate_slot": "Each slot must be unique.",
       "wrong_cb_prefix": "A soil probe's device prefix is set by which device it's plugged into — you can't move a probe by editing its slot. Use the probe's own prefix or the bare soil name.",
       "same_probe": "Old and new probe must be different.",
-      "different_cb": "Both probes must be on the same device."
+      "different_cb": "Both probes must be on the same device.",
+      "tl_dir_required": "Enter a storage folder path.",
+      "tl_dir_insecure": "That folder is web-served without a login (a /www path). Pick a private path like /media/sf_timelapse.",
+      "tl_dir_unwritable": "Home Assistant can't create or write to that folder. Check the path and permissions."
     },
     "abort": {
       "no_devices": "No devices have been assigned slots yet — connect a device first.",

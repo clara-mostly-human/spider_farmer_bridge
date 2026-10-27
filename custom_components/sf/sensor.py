@@ -47,6 +47,28 @@ async def async_setup_entry(
     if pending:
         _add(pending)
 
+    # Time-lapse status sensors — one per instance (camera), created/removed as the
+    # user adds/removes time-lapse cards. (v3.19.362)
+    mgr = hass.data[DOMAIN][entry.entry_id].get("timelapse")
+    if mgr is not None:
+        from .timelapse import SIGNAL_TIMELAPSE_INSTANCES
+        known: set[str] = set()
+
+        @callback
+        def _sync_tl_sensors() -> None:
+            new = []
+            for tl_id in mgr.ids():
+                if tl_id in known:
+                    continue
+                known.add(tl_id)
+                new.append(SfTimelapseSensor(hass, entry, mgr, tl_id))
+            if new:
+                async_add_entities(new)
+
+        _sync_tl_sensors()
+        entry.async_on_unload(async_dispatcher_connect(
+            hass, SIGNAL_TIMELAPSE_INSTANCES.format(entry.entry_id), _sync_tl_sensors))
+
 
 class SfSensor(SfEntity, SensorEntity):
     def __init__(self, bus: SfBus, d: SfDef) -> None:
@@ -430,3 +452,75 @@ class SfAlarmSettingsSensor(SfSensor):
             return dict(v) if isinstance(v, dict) else {}
         except Exception:  # noqa: BLE001
             return {}
+
+
+class SfTimelapseSensor(SensorEntity):
+    """Per-instance time-lapse status (one per camera/card). State = capturing/idle;
+    the controller's full status (tl_id, name, camera, dir, session, frame_count,
+    last_capture, errors, overlay) rides in the attributes so the card can read it.
+    Removes itself when its instance is deleted. (v3.19.362)"""
+
+    _attr_has_entity_name = False
+    _attr_icon = "mdi:camera-timer"
+    _attr_should_poll = False
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, manager, tl_id: str) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._mgr = manager
+        self._tl_id = tl_id
+        ctrl = manager.get(tl_id)
+        self._attr_name = f"SF Timelapse {ctrl.name if ctrl else tl_id}"
+        self._attr_unique_id = f"{entry.entry_id}_timelapse_{tl_id}"
+
+    @property
+    def _ctrl(self):
+        return self._mgr.get(self._tl_id)
+
+    async def async_added_to_hass(self) -> None:
+        from .timelapse import SIGNAL_TIMELAPSE_UPDATE, SIGNAL_TIMELAPSE_INSTANCES
+
+        @callback
+        def _update() -> None:
+            # Instance gone (removed) → drop this entity AND its registry entry so it
+            # doesn't linger as an "unavailable" ghost.
+            if self._tl_id not in self._mgr.ids():
+                self.hass.async_create_task(self._remove_self())
+                return
+            self.async_write_ha_state()
+
+        self.async_on_remove(async_dispatcher_connect(
+            self.hass,
+            SIGNAL_TIMELAPSE_UPDATE.format(f"{self._entry.entry_id}_{self._tl_id}"),
+            _update))
+        self.async_on_remove(async_dispatcher_connect(
+            self.hass, SIGNAL_TIMELAPSE_INSTANCES.format(self._entry.entry_id), _update))
+
+    async def _remove_self(self) -> None:
+        await self.async_remove(force_remove=True)
+        try:
+            from homeassistant.helpers import entity_registry as er
+            reg = er.async_get(self.hass)
+            if self.entity_id and reg.async_get(self.entity_id):
+                reg.async_remove(self.entity_id)
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            pass
+
+    @property
+    def available(self) -> bool:
+        return self._ctrl is not None
+
+    @property
+    def name(self) -> str:
+        c = self._ctrl
+        return f"SF Timelapse {c.name if c else self._tl_id}"
+
+    @property
+    def native_value(self) -> str:
+        c = self._ctrl
+        return "capturing" if (c and c.status().get("capturing")) else "idle"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        c = self._ctrl
+        return c.status() if c else {}

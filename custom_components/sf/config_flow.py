@@ -27,6 +27,7 @@ from .const import (
     CONF_DIAG_DAYS,
     DEFAULT_DIAG_DAYS,
     CONF_PRESERVE_ON_REMOVE,
+    TIMELAPSE_BLOCKED_ROOTS,
 )
 
 # The upstream (Spider Farmer cloud) host/port are protocol constants — the
@@ -80,6 +81,43 @@ def _base_schema(current: dict) -> vol.Schema:
             default=current.get(CONF_KEEP_OFFLINE, True),
         ): bool,
     })
+
+
+def _normalize_timelapse_dir(raw: str) -> str:
+    """Trim + normalize a user-entered storage path (no trailing slash)."""
+    import os
+    p = (raw or "").strip()
+    if not p:
+        return ""
+    return os.path.normpath(p)
+
+
+def _is_blocked_timelapse_dir(path: str) -> bool:
+    """Refuse web-served roots. Anything under /config/www (served at /local/...
+    with no auth) or containing a 'www' path segment is rejected — the whole
+    point of the setting is SECURE storage."""
+    norm = (path or "").replace("\\", "/").rstrip("/").lower()
+    if not norm:
+        return True
+    for b in TIMELAPSE_BLOCKED_ROOTS:
+        bb = b.replace("\\", "/").rstrip("/").lower()
+        if norm == bb or norm.startswith(bb + "/"):
+            return True
+    return "www" in norm.split("/")
+
+
+def _timelapse_dir_writable(path: str) -> bool:
+    """Create the dir if needed and confirm we can write to it (executor job)."""
+    import os
+    try:
+        os.makedirs(path, exist_ok=True)
+        test = os.path.join(path, ".sf_tl_write_test")
+        with open(test, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(test)
+        return True
+    except OSError:
+        return False
 
 
 class SfBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

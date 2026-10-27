@@ -11,6 +11,8 @@
 [![Hotspot add-on version](https://img.shields.io/badge/dynamic/yaml?color=8250df&label=hotspot%20add--on&query=%24.version&url=https%3A%2F%2Fraw.githubusercontent.com%2Fcobragt2000%2Fspider_farmer_bridge%2Fmain%2Fspider_farmer_hotspot%2Fconfig.yaml)](https://github.com/cobragt2000/spider_farmer_bridge)
 [![Downloads](https://img.shields.io/github/downloads/cobragt2000/spider_farmer_bridge/total?color=orange&label=downloads)](https://github.com/cobragt2000/spider_farmer_bridge/releases)
 
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=cobragt2000&repository=spider_farmer_bridge&category=integration)
+
 Local control and monitoring for **Spider Farmer GGS (Genius Grow System)**
 devices — Display Panels, AC5/AC10 power strips, the S-Station single-outlet
 metered plug, light controllers, grow lights, climate gear, and 3-in-1 soil
@@ -45,11 +47,14 @@ bundled:
   (below).
 - **`custom:ppfd-3d-card`** — a 3D PPFD visualizer for Spider Farmer SE4500,
   SE5000, SF2000, SF7000 and G1000W grow lights (PPFD curves built from each
-  light's published PPFD map). Configure it per its own options (`light_model`,
-  `entities`); `unit_system: auto` (the default) follows your Home Assistant
-  unit system, or force `metric` / `imperial`. A **Settings** tab adds an
-  **Auto-read brightness** toggle — pick a Spider Farmer light (live) or a Schedule
-  Brightness (target) and the card's Brightness tracks it live.
+  light's published PPFD map). Set it up entirely from the UI — add the card and
+  use its **visual editor** (no YAML): pick the light model, entities, unit system
+  (`auto` follows your Home Assistant unit system, or force `metric` / `imperial`)
+  and the brightness source. Add as **many PPFD cards as you like** — each gets its
+  own id, so multiple cards never conflict. The editor's brightness controls include
+  an **Auto-read brightness** toggle and a **Light source** picker — point it at a
+  Spider Farmer light (live) or a Schedule Brightness (target) and the card's
+  brightness tracks it live.
 
 The main card (`custom:spider-farmer-card`) is a single tabbed card:
 
@@ -222,6 +227,68 @@ decoded `periods` list as an attribute) and written back with the
   <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_12.png" width="300" alt="Replace soil probe" />
 </p>
 
+## Time-lapse
+
+Turn any Home Assistant `camera.*` into a grow time-lapse. The integration captures a
+frame on a schedule, stores the frames in a **secure, private folder** (never a
+web-served `/www` path), and the **Spider Time-lapse Card** scrubs/plays them and
+exports a shareable `.mp4` with ffmpeg. An optional env overlay stamps each frame with
+live readings — grouped, placed in a row, or dragged reading-by-reading anywhere on the
+image:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Spider_TimeLapse_01.png" width="260" alt="Time-lapse card — grouped overlay in a single top row" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Spider_TimeLapse_02.png" width="260" alt="Time-lapse card — coloured overlay stacked in a corner" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Spider_TimeLapse_03.png" width="260" alt="Time-lapse card — readings placed independently in the corners" />
+</p>
+
+> The plant image above is a placeholder — your cards show your own camera's frames.
+
+**Set up and run entirely from the card:**
+
+- **One card = one time-lapse.** Add a *Spider Time-lapse Card* and open its editor
+  (⋮ → Edit): give it a **Title** (optional — blank = named after the camera), pick its
+  **Camera**, choose the **storage folder**, and set the capture **Interval** — all from
+  pickers at setup. Intervals: **5, 10, 15, 20, 30 minutes, 1 hour, or 1 day.**
+- **Multiple cameras / multiple time-lapses.** Add another card with a different Title
+  and camera — each is its own independent time-lapse with its own capture, storage
+  folder, status sensor and overlay. Two cards with the *same* Title + camera + interval
+  point at the *same* time-lapse. Each instance defaults its storage to
+  `/media/sf_timelapse/<Title_camera_interval>` (a `/media` path also surfaces the
+  finished video in Home Assistant's media browser).
+- **Captures land on the clock.** Frames are taken on the interval's wall-clock
+  boundary, not relative to when you pressed Start — a 5-minute time-lapse fires at
+  :00/:05/:10…, 15-minute at :00/:15/:30/:45, hourly on the hour, daily at midnight. For
+  a **1-day** interval the card shows the exact next capture time (e.g. *First frame at
+  12:00 PM*).
+- **Env overlay, your way.** Optionally stamp live readings onto each frame — Timestamp,
+  Day, Temp, Humidity, VPD, CO2, PPFD. From the card's ⚙ settings you pick which
+  readings, **group them** or **place each one independently by dragging it** anywhere on
+  the image (it keeps the point you grabbed under the cursor and snaps to the nearer side
+  so long readings never run off the edge), set the **text size** and **colour**,
+  show/hide labels, lay them out **stacked or in a single horizontal row**, and choose
+  which panel to read env from. The overlay can be drawn **live on the card** or **burned
+  into the exported video**. A bundled font renders units like **µmol** and **°F**
+  identically on every host.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Spider_TimeLapse_04.png" width="300" alt="Time-lapse overlay settings — fields, text size, colour, labels, placement" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Spider_TimeLapse_05.png" width="300" alt="Daily time-lapse showing the scheduled first-capture time" />
+</p>
+
+- **Secure by design:** frames and videos are served only through an authenticated
+  endpoint using short-lived **signed URLs** — nothing time-lapse-related ever sits on
+  an unauthenticated URL, and the storage picker refuses `/www`.
+- **Survives restarts & hiccups:** each capture **resumes its own session** after a Home
+  Assistant reboot, so every time-lapse stays continuous instead of fragmenting. If a
+  camera briefly goes unavailable, the capture **retries quickly** (gentle backoff) and
+  the loop can never die, so a blip doesn't cost you the interval.
+- **Card controls:** the live latest frame, frame count + total size, a scrub/play bar,
+  Start/Stop, and **Export MP4** / **Download MP4**.
+
+See [docs/ENTITIES.md](docs/ENTITIES.md#time-lapse) for the per-instance
+`sensor.sf_timelapse_<name>` attributes and the `sf.timelapse_*` services.
+
 ## What you get
 
 **Devices, modeled truthfully.** Every entity is created from *evidence* —
@@ -376,10 +443,22 @@ Home Assistant:
 ## Installation
 
 ### HACS (custom repository)
+
+**One click** — open this repository in your own HACS, then select **Download**:
+
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=cobragt2000&repository=spider_farmer_bridge&category=integration)
+
+**Or add it manually:**
+
 1. HACS → three-dot menu → **Custom repositories** → add
    `https://github.com/cobragt2000/spider_farmer_bridge`, category **Integration**
 2. Install **Spider Farmer Bridge**, restart Home Assistant
-3. Settings → Devices & Services → **Add integration** → Spider Farmer Bridge
+
+After restarting, add the integration — one click:
+
+[![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=sf)
+
+…or go to Settings → Devices & Services → **Add integration** → Spider Farmer Bridge.
 
 ### Manual
 Copy `custom_components/sf/` into your `config/custom_components/` and

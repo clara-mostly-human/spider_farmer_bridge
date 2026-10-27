@@ -3,6 +3,460 @@
 All notable changes to the Spider Farmer Bridge integration.
 Each section below is ready to paste into the matching GitHub release.
 
+## 3.19.388
+
+### Changed
+- **Overlay placement is easier to use.**
+  - Dragging a reading now keeps the exact point you grabbed under the cursor, instead of
+    snapping the box's edge to the pointer — so you can place it precisely. It still clamps
+    inside the frame and anchors to the nearer side for long readings, with no jump at the
+    midline.
+  - Newly enabled (un-positioned) readings now stack from the top-left and stay on the
+    image, instead of defaulting below the bottom edge. Burned frames use the same default.
+  - The overlay field buttons are reordered to Timestamp · Day · Temp · Humidity · VPD ·
+    CO2 · PPFD.
+- **The "first frame at" countdown shows AM/PM** (e.g. "First frame at 12:00 PM · in 2h")
+  instead of 24-hour time.
+
+Card → 0.21.114.
+
+## 3.19.387
+
+### Changed
+- **Overlay now uses a bundled font (proper "µ" everywhere, live and burned).** The
+  integration ships a small (~11 KB) font — "SF Overlay", a renamed subset of DejaVu Sans
+  (Basic Latin + Latin-1), license included — so both the live card overlay and the
+  server-side burned frames render the micro sign (µ), degree (°), etc. identically, no
+  matter which fonts the host or browser has installed. Previously, hosts without a Unicode
+  font fell back to ASCII in burned frames ("582umol", and the "°" dropped from "81.32°F");
+  now they read "582µmol" / "81.32°F". The ASCII fallback remains only as a last resort if
+  the bundled font ever fails to load.
+  - Live overlay (card): the font is registered at the document level (so it reaches the
+    card's shadow DOM) and `.tl-ov` uses it with a system-font fallback. Card → 0.21.113.
+  - Burned frames (backend): the burn loads the bundled font first, then any system font.
+  - Applies to new captures after updating and restarting; already-burned frames keep their
+    baked-in text.
+
+## 3.19.386
+
+### Fixed
+- **Burned-in PPFD no longer shows a box/"X" for the µ** — the overlay-burn path used
+  Pillow's built-in bitmap font, which on some hosts lacks the micro sign (µ), so it drew
+  a missing-glyph box. The burn now prefers a real Unicode TrueType font (DejaVu/FreeSans/
+  Liberation) so it renders "586µmol" exactly like the live card overlay; when no such font
+  is available it falls back to ASCII ("586umol", "80.6F") so a box can never appear.
+  Applies to new captures after updating and restarting — already-burned frames keep their
+  baked-in text.
+
+## 3.19.385
+
+### Changed
+- **PPFD overlay drops the "/m²/s"** — it now reads e.g. "581µmol" instead of
+  "581µmol/m²/s" (the ² rendered as a stray glyph in burned frames and was noise on the
+  small overlay). Live card and old frames update immediately; burned frames on new captures.
+- **Overlay Text size range is now 5–20 px** (was 10–40), with the backend minimum lowered
+  to 5 so the smallest sizes save correctly.
+
+## 3.19.384
+
+### Added
+- **Overlay text size is adjustable.** The ⚙ overlay settings have a Text size picker (10–40
+  px) next to "Read env from". It sizes the live on-card overlay and the burned-in frames to
+  match. New `overlay_font` option on `sf.timelapse_configure`.
+- **Daily capture time is set at card setup.** Picking the 1-day interval in the card editor
+  now shows a "Capture daily at (time of day)" field.
+
+### Changed
+- **45-minute interval removed** from the interval dropdown (existing 45-min time-lapses still
+  display their label).
+- **Overlay settings open below the image**, so the frame stays visible while you drag the
+  readings to position them.
+
+## 3.19.383
+
+### Added
+- **PPFD card now has a visual editor — no YAML needed.** The 3D grow-light card gets a
+  proper config form: title, light model, units, a Brightness section (Auto-read + Light
+  source, matching the card's Settings tab), default light/plant heights, plants, brightness,
+  photoperiod, and tent size.
+- **Multiple PPFD cards no longer share settings.** Each card gets a unique `card_id`, so two
+  cards (even on the same light model) keep their own saved settings. The editor assigns one
+  to existing cards automatically.
+- **20-minute time-lapse interval** added to the interval dropdown.
+
+### Changed
+- **Burned-in overlay text is larger** (h/24 instead of h/28) so it reads about the same size
+  as the live on-card overlay once the frame is scaled to the card. Applies to new frames.
+
+## 3.19.382
+
+### Fixed
+- **Playback no longer flickers black between frames.** The viewer image was decoding
+  asynchronously, so it briefly cleared while the next frame decoded. It now decodes
+  synchronously, keeping the current frame on screen until the next is ready. (Card 0.21.109.)
+
+## 3.19.381
+
+### Fixed
+- **Overlay readings no longer squish/wrap near the right edge.** A right-anchored item was
+  getting width-constrained, so a reading like "Day 5" wrapped onto two lines. Overlay boxes
+  now size to their content and don't wrap single lines (the grouped box's stacked layout
+  still works). (Card 0.21.108.)
+
+## 3.19.380
+
+### Fixed
+- **Time-lapse capture now recovers from a camera hiccup on its own.** If a snapshot
+  failed (camera/stream briefly unavailable), the loop waited the whole interval before
+  trying again — a full day for a 1-day lapse — and a hung image grab could stall it.
+  Now a failed capture retries soon (30s, backing off, capped at the interval), the loop
+  can never die (it always re-arms, even if a tick crashes), and the still-image grab has
+  a hard timeout so a broken RTSP stream can't freeze it. The next good frame returns to
+  the normal cadence.
+- **Smoother time-lapse playback (no more mid-play hangs).** Frame URLs are re-signed on
+  every refresh, which busted the browser cache and forced re-downloads during playback.
+  The card now pauses that refresh while playing and pre-loads upcoming frames, so playback
+  plays from cache; a stale frame URL auto-recovers.
+- **Overlay readings snap to the nearer side, and can reach the right edge.** An overlay
+  item on the right half of the image now anchors its right edge (text grows left) so long
+  readings no longer run off the right edge; the left half anchors left as before. Items
+  can be dragged flush to the right edge (the old drag limit stopped them short). Applies
+  on the card and in burned/exported frames.
+
+- Adds the missing **hotspot add-on 0.8.5** changelog note (version-string fix).
+
+## 3.19.378
+
+### Fixed
+- **No more orphan folders while setting up a card.** The editor used to write to the
+  backend on every change, so picking a camera created one folder and then adding a title
+  created another (leaving the first behind). The editor now only configures the card; the
+  time-lapse folder is created once, when you tap "Set up" on the card.
+
+## 3.19.377
+
+### Changed
+- **Interval is now a card-setup choice, and the same camera can run on multiple cards.**
+  Interval moves to the editor next to Camera/Title/Storage. Each time-lapse is named
+  `Title_camera_interval` (e.g. `VegTent_<camera-id>_5m`), so you can point a 5-minute card
+  and a 1-day card at the same camera and they're fully separate time-lapses with their own
+  folders. Changing the interval later starts a fresh time-lapse (new folder).
+- **Removed the Refresh button.** The card already polls every ~20s and shows the latest
+  frame automatically (it keeps your position if you're scrubbing back through history).
+
+## 3.19.376
+
+### Fixed
+- **Setting a time-lapse back up after a delete now works from the editor.** Re-opening
+  the card editor with the same camera already selected fired no change event, so the
+  instance never came back (the preview stayed "not set up"). The editor now re-creates
+  the instance automatically when the card has a camera but none exists.
+- Clearer empty-card wording: explains you can reuse the camera, or remove the card by
+  editing the dashboard (a card can't delete itself). (Card 0.21.103.)
+
+## 3.19.375
+
+### Fixed
+- **Delete works without reinstalling the integration.** The card's 🗑 now deletes images
+  via the existing `timelapse_clear` + `timelapse_remove` services instead of a new
+  `timelapse_remove` flag, so it no longer fails with "not a valid option at
+  'delete_images'" when the installed backend predates that flag. (Card 0.21.102.)
+
+## 3.19.374
+
+### Fixed
+- **Title field now shows in the time-lapse card editor.** The Title input relied on
+  `ha-textfield`, which didn't render in the card-editor context (the field was missing).
+  Switched to a plain styled input, matching the storage picker. (Card 0.21.101.)
+
+## 3.19.373
+
+### Changed
+- **Time-lapse setup moved to the card editor.** Camera, Title and Storage folder are now
+  set at card setup (⋮ → Edit) as pickers — the camera entity-picker, a Title that syncs
+  across your devices (defaults to the camera's name), and a secure storage-folder picker.
+  The ⚙ gear is now operational-only (interval, retention, enable, overlay, align).
+
+### Fixed
+- **Deleting a time-lapse now actually sticks, and cleans up.** The 🗑 in the manage list
+  uses a reliable two-tap confirm (the old browser confirm was silently suppressed in some
+  HA webviews, so deletes appeared to do nothing), and it now deletes the captured images
+  on disk too — no more manually deleting the folder.
+- **Re-adding the same camera after a delete.** When a card has no time-lapse yet but its
+  camera is already set, it shows a one-tap "Set up" button, so you can recreate the same
+  camera without re-picking it or clearing the folder by hand.
+
+## 3.19.372
+
+### Added
+- **Custom display name for time-lapse cards.** Each time-lapse card's ⚙ settings now
+  has a **Display name** field. Leave it blank and the header falls back to the
+  camera's friendly name instead of the long auto-generated id (e.g. the full
+  `camera.<make>_<model>_<stream>` entity id), cutting header clutter. The name
+  persists server-side (via `sf.timelapse_configure`, new `label` field) so it resumes
+  on every device, and it never changes the instance id. The "Time-lapses" manage list
+  uses the same friendly name. (Card 0.21.99.)
+
+## 3.19.371
+
+### Fixed
+- **Blower now shows "Offline" when unplugged.** Same failure mode as the humidifier
+  fix: on an unplug the controller drops the blower block from the live frame entirely,
+  so the live decoder couldn't flip the fan tile off and it sat stale "On". An op-log
+  `opType 2` (OFFLINE) now forces the blower fan tile off (and sets its offline marker).
+  Self-heals — the blower logs a recovery `opType 1` when it returns, so the live
+  running state is restored. The Offline state also survives an HA restart: it is
+  re-derived from the op log on reconnect (the offline publish runs on every backfill,
+  not just fresh events), so a still-offline device comes back Offline rather than
+  stale "On". Confirmed from a live blower unplug capture.
+
+## 3.19.370
+
+### Fixed
+- **Humidifier (and heater) now show "Offline" when unplugged.** On an unplug the
+  controller sends `"<accessory>": null` in the live frame plus an op-log `opType 2`
+  (OFFLINE). With an Automatic gear the live `level` normally owns on/off, so the empty
+  block left the tile stuck "On". Now an op-log OFFLINE forces the accessory off (and
+  sets its offline marker) regardless of gear, so the tile flips to Offline. Confirmed
+  from a live humidifier unplug capture.
+
+## 3.19.369
+
+### Added
+- **Day counter overlay** — add a "Day" field to the env overlay to stamp each frame
+  with the grow day (1-based, calendar days since the time-lapse started). Great for
+  grow logs; burns into the video too.
+- **"Start on the mark" toggle** — on (default) the first frame lands on the next
+  5/10/15… clock mark; off starts capturing right away and runs every interval.
+- **Pick the time for a daily time-lapse** — when the interval is **1 day**, a "Capture
+  daily at" time picker sets the time of day for the daily frame (defaults to midnight).
+- **"Show labels" toggle** — turn it off to show just the values (e.g. `72°F`) without
+  the Temp/RH labels, for a cleaner overlay.
+- **Live overlay preview while editing** — the overlay now shows the panel's live
+  readings (and current time) as you set it up, before any frame is captured.
+- **Capture rate + total size in the card header** (e.g. `5 min · 12 frames · 3.8 MB`),
+  and a **countdown** on the "waiting for the first frame" message when aligned.
+
+### Changed
+- **Compact card settings** — Camera + Storage, and Interval + Keep (days), each share a
+  row; Enable / Env overlay / Burn / Start-on-the-mark sit on one line; the Read-env and
+  Layout dropdowns are narrower. The Time-lapses list (with 🗑 remove) always shows so
+  orphaned instances are easy to clean up.
+
+## 3.19.368
+
+### Added
+- **Remove orphaned time-lapses.** The card's ⚙ settings now list every time-lapse with
+  a 🗑 button, so a leftover instance (e.g. from renaming a card) can be deleted. Removing
+  one also clears its leftover status sensor from the entity registry instead of leaving
+  an "unavailable" ghost.
+- **Overlay layout when grouped: Vertical or Horizontal.** With *All together* on, choose
+  stacked (one per line) or a single row.
+
+### Fixed
+- The timestamp placeholder in the overlay preview is capitalized ("Time").
+
+## 3.19.367
+
+### Added
+- **Env overlay: colour + placement.** The time-lapse env overlay now has a **colour
+  pinwheel** to pick the text colour, and you can **place the readings on the image**:
+  tick **All together** to keep them in one box (stacked in the order you select the
+  fields), or untick it to **drag each reading independently** onto the frame. Drag the
+  group box (or each reading) right on the live preview while the ⚙ settings are open.
+  Positions and colour apply to both the on-card overlay and the burned-in video.
+
+## 3.19.366
+
+### Fixed
+- **Time-lapse card settings dropdowns no longer snap back.** Changing the storage
+  folder, interval, camera or env panel stuck instead of reverting — the selects now
+  bind their value with Lit's `live()` so a background re-render can't reset your pick
+  (the same fix used for the brightness dropdown).
+
+## 3.19.365
+
+### Fixed
+- **Time-lapse stopped "retaining" the old shared `/media/sf_timelapse` folder.** An
+  instance migrated from the old single-time-lapse setup is now automatically moved into
+  its own `/media/sf_timelapse/<name>` subfolder on update — but only when that shared
+  folder holds no frames for it, so an in-progress time-lapse is never disturbed. This
+  also stops two cameras ever pouring frames into one folder. The card's storage picker
+  likewise defaults an empty instance to its own subfolder instead of the shared root.
+
+## 3.19.364
+
+### Changed
+- **Time-lapse captures now land on the clock.** Instead of firing relative to when you
+  pressed Start, each frame is taken on the interval's wall-clock boundary: a 5-minute
+  time-lapse captures at :00/:05/:10…, 15-minute at :00/:15/:30/:45, hourly on the hour,
+  daily at local midnight. Start a 5-minute one at 1:52 → first frame at 1:55; a
+  15-minute at 2:12 → first frame at 2:15. Also survives restarts (it just re-aligns to
+  the next boundary).
+
+## 3.19.363
+
+### Added
+- **"Delete all images" button** on the Spider Time-lapse Card — wipes every captured
+  image, session and exported video for that time-lapse (with a confirm), and keeps
+  capturing into a fresh session if it was running. New service `sf.timelapse_clear`.
+
+### Changed
+- **Time-lapse card settings: storage folder is now a dropdown** of secure presets
+  (this instance's own `/media/sf_timelapse/<name>` folder, plus `/media/sf_timelapse`,
+  `/share/sf_timelapse`, `/config/sf_timelapse`) with a **Custom…** option that reveals
+  a text field — the same convenience the old integration options had.
+- **Capture interval is now a preset picker**: 5 min, 10, 15, 30, 45, 1 hour, 1 day
+  (an existing non-standard interval is kept and shown as a "custom" entry).
+
+## 3.19.362
+
+### Added
+- **Multiple time-lapses, one per camera.** You can now run a separate, independent
+  time-lapse for each camera. Add a Spider Time-lapse Card, **name it** in the editor
+  (leave the name blank and it's named after the camera — so there's no chance of a
+  naming clash), and **pick its camera**; add another card with a different name for a
+  second camera. Each card is its own time-lapse with its own capture, storage folder
+  (default `/media/sf_timelapse/<name>`), status sensor `sensor.sf_timelapse_<name>`,
+  overlay and MP4 export. Two cards with the *same* name share one time-lapse.
+- New service `sf.timelapse_remove` (delete an instance — stops capture and drops its
+  status sensor; frames on disk are kept). All `sf.timelapse_*` services now take an
+  optional `tl_id` to target a specific instance.
+
+### Changed
+- **Time-lapse is now configured entirely from the card**, not the integration options.
+  The integration *Configure → Time-lapse* step has been removed; the card's editor
+  (name + camera) and ⚙ settings (storage, interval, retention, overlay, enable) are the
+  one place to set everything up.
+- Each time-lapse resumes **its own** session after a Home Assistant restart.
+
+### Migration
+- An existing single time-lapse is folded into one instance automatically on update,
+  keeping its storage folder and its in-progress session (no lost frames, capture
+  resumes). Point your existing Spider Time-lapse Card's editor at the same camera (or
+  leave it — it falls back to the first instance) and it keeps working.
+
+## 3.19.361
+
+### Added
+- **Configure the time-lapse from the card.** The Spider Time-lapse Card has a ⚙ settings
+  panel to set the camera, storage folder, interval, retention and enable capture — no
+  need to open the integration options. The card's config editor also has a **camera
+  picker**, like the other cards. New service `sf.timelapse_configure`.
+- **Phase 3 — env-data overlay.** Optionally overlay SF env readings (Temp, Humidity,
+  VPD, CO2, PPFD, Timestamp — each selectable) on the time-lapse, reading from a chosen
+  panel. A **"Burn into video"** toggle chooses between burning the readings into the
+  frames at capture (so they're permanent and show in the exported .mp4, with each
+  frame's own data) or a lighter card-only overlay. Per-frame readings are recorded to a
+  sidecar so the card overlay is historically accurate when scrubbing.
+
+## 3.19.360
+
+### Fixed
+- **Time-lapse capture stopped after a Home Assistant restart.** Capture now persists
+  its intent + active session and **resumes the SAME session** on boot, so a reboot
+  keeps one continuous time-lapse instead of stopping or starting a fresh session. (An
+  explicit Stop clears the resume so it stays stopped.)
+
+### Added
+- **Time-lapse card shows the total capture size** next to the frame count in the header.
+
+### Docs
+- README gains a Time-lapse section; `docs/ENTITIES.md` documents `sensor.sf_timelapse`
+  and the `sf.timelapse_*` services.
+
+## 3.19.359
+
+### Added
+- **Time-lapse export (Phase 2).** Turn a captured session into a shareable `.mp4`.
+  The new "Export MP4" button on the Spider Time-lapse Card runs ffmpeg over the
+  session's frames and writes the video into the same secure folder; a "Download MP4"
+  button then opens it through a short-lived signed URL. A video under `/media` also
+  shows up in Home Assistant's media browser. New service `sf.timelapse_export`
+  (session / fps / name); the `sensor.sf_timelapse` entity now reports `export_running`,
+  `last_export`, and `last_export_error`. (card v0.21.89)
+
+### Hotspot add-on (0.8.6)
+- Cleared Supervisor deprecation warnings: switched the add-on to the
+  `homeassistant_config` map (from the deprecated `config`) and dropped the deprecated
+  `armv7`/`armhf` architectures. The HA config mount moved to `/homeassistant`; the
+  status page reads controller names from either location so nothing breaks.
+
+## 3.19.358
+
+### Added
+- **Time-lapse (Phase 1).** The integration can now capture a `camera.*` entity on an
+  interval into a SECURE, user-chosen folder, and a new "Spider Time-lapse Card" plays
+  the frames back with a scrubber.
+  - Configure it in the integration's Options → "Time-lapse": pick the camera, a storage
+    folder, capture interval, retention (days), and an enable toggle. The storage picker
+    is a dropdown with secure defaults (`/media/sf_timelapse`, `/share/...`, `/config/...`)
+    and accepts a custom path, but **refuses any web-served `/www` folder** — frames never
+    sit on an unauthenticated URL.
+  - Frames load in the card through short-lived **signed URLs** fetched over the HA
+    websocket (no public path, no embedded token; path params are traversal-guarded).
+  - A `sensor.sf_timelapse` entity reports capture status (capturing, frame count, last
+    capture, session, errors). Services: `sf.timelapse_start`, `sf.timelapse_stop`,
+    `sf.timelapse_set_interval`.
+  - Retention sweeps old frames automatically. Phase 2 will add ffmpeg `.mp4` export.
+  (card v0.21.88)
+
+## 3.19.357
+
+### Changed
+- **Power history graph now fills from the 0 baseline up.** The power/voltage/current/
+  energy graph drew a line only, so a high, noisy current draw looked like it hung
+  from the top ("inverted"). It now fills the area from the line down to 0, so the
+  signal reads as a level sitting above the 0 baseline at the bottom.
+- **"Rearrange tiles" is now a titled section** in Settings → Layout, the button reads
+  **"Rearrange / Hide Tiles"**, and its description mentions tapping a tile's eye icon
+  to hide it. (card v0.21.87)
+
+## 3.19.356
+
+### Added
+- **Hide tiles from the Overview.** In Rearrange mode (Settings → Layout → Rearrange
+  Tiles) each tile now has an eye icon. Tapping it hides the tile and moves it to a
+  "Hidden tiles" tray at the bottom of Rearrange, where the eye-off icon restores it.
+  Hidden tiles are removed from the normal Overview and the choice is saved
+  server-side, so it carries across devices and sessions. (card v0.21.86)
+
+## 3.19.355
+
+### Fixed
+- **S-Station Manual Power toggle didn't arm Apply.** On the S-Station (single
+  outlet) card, flipping the Power switch while the device type was "General device"
+  (Manual) left the Apply button disabled and never committed, so the outlet couldn't
+  be switched from the settings pop. The staged toggle now arms Apply and commits the
+  switch (and a power-only change no longer re-sends the Manual config).
+
+### Added
+- **S-Station Power tile now has the history-graph icon** in its upper-right corner,
+  matching the other tiles.
+- **S-Station power graph metric picker.** The power history graph has a selector to
+  plot Watts, Volts, Amps or kWh; the choice is remembered server-side.
+
+## 3.19.354
+
+### Fixed
+- **Outlet tile flipped On/Off before Apply.** Toggling the Power switch inside an
+  outlet's settings made the tile immediately show On/Off, even though the outlet only
+  actually switches when you press Apply — so the tile looked like the device had
+  already toggled. The tile now follows the real device state (plus the brief
+  post-Apply optimistic paint) and ignores the staged, not-yet-applied Power toggle.
+  The in-pop Power control and the staged mode sub-label still preview as before.
+  (card v0.21.84)
+
+## 3.19.353
+
+### Fixed
+- **Device history graph Y-axis exceeded 100% for percentage metrics.** A blower
+  running at 100% showed a "108.0" axis top, because the graph adds 8% headroom above
+  the data max — fine for open-ended metrics but wrong for a percentage that is capped
+  at 100. The padded axis top is now clamped to 100 for `%` metrics (fan/blower speed,
+  brightness, humidity, moisture) whose data stays within 0–100, so the top reads
+  100, not 108. (card v0.21.83)
+
 ## 3.19.352
 
 ### Fixed

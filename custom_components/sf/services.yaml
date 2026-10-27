@@ -322,3 +322,231 @@ reboot_device:
       selector:
         entity:
           integration: sf
+
+# ── Time-lapse (v3.19.362: per-instance, keyed by tl_id) ─────────────────────
+# Each camera's time-lapse is an independent instance identified by a slug (tl_id),
+# normally driven from the Spider Time-lapse card. Omit tl_id to target the first
+# instance (back-compat).
+timelapse_configure:
+  name: Time-lapse configure
+  description: >-
+    Create or update one time-lapse instance. Supply tl_id (a slug) or let it be
+    derived from name/camera; a new tl_id creates a new time-lapse. Storage must be
+    a secure, non-web-served folder (never under /www or /config/www).
+  fields:
+    tl_id:
+      name: Instance id
+      description: Stable slug for this time-lapse. New id = new instance.
+      required: false
+      selector:
+        text:
+    name:
+      name: Name
+      description: Instance name (drives the tl_id slug). Defaults from the camera when blank.
+      required: false
+      selector:
+        text:
+    label:
+      name: Display name
+      description: >-
+        Optional header title shown on the card. Leave blank to fall back to the
+        camera's friendly name. Does not change the tl_id.
+      required: false
+      selector:
+        text:
+    camera:
+      name: Camera
+      required: false
+      selector:
+        entity:
+          domain: camera
+    storage_dir:
+      name: Storage folder
+      description: Secure absolute path (never /www or /config/www).
+      required: false
+      selector:
+        text:
+    interval:
+      name: Interval (s)
+      required: false
+      selector:
+        number: { min: 5, max: 3600, step: 5, unit_of_measurement: s, mode: box }
+    retention:
+      name: Keep (days)
+      required: false
+      selector:
+        number: { min: 1, max: 365, step: 1, unit_of_measurement: d, mode: box }
+    enabled:
+      name: Enable capture
+      required: false
+      selector:
+        boolean:
+    overlay:
+      name: Env overlay
+      required: false
+      selector:
+        boolean:
+    overlay_burn:
+      name: Burn overlay into video
+      required: false
+      selector:
+        boolean:
+    overlay_panel:
+      name: Read env from panel
+      required: false
+      selector:
+        text:
+    overlay_fields:
+      name: Overlay fields
+      description: "Any of: temp, humidity, vpd, co2, ppfd, timestamp, day."
+      required: false
+      selector:
+        object:
+    overlay_color:
+      name: Overlay text colour
+      description: Hex colour, e.g. "#ffffff".
+      required: false
+      selector:
+        text:
+    overlay_grouped:
+      name: Overlay grouped
+      description: All readings in one box (selection order) vs. placed per field.
+      required: false
+      selector:
+        boolean:
+    overlay_orient:
+      name: Overlay layout
+      description: '"v" (stacked) or "h" (one row) for the grouped box.'
+      required: false
+      selector:
+        text:
+    overlay_labels:
+      name: Overlay labels
+      description: Off shows just values (e.g. 72°F) without the Temp/RH labels.
+      required: false
+      selector:
+        boolean:
+    overlay_font:
+      name: Overlay text size
+      description: Overlay text size in px as shown on the card (default 12).
+      required: false
+      selector:
+        number:
+          min: 5
+          max: 20
+          step: 1
+          mode: box
+    overlay_pos:
+      name: Overlay positions
+      description: '{field|"group": [xPct, yPct]} anchor positions.'
+      required: false
+      selector:
+        object:
+    align:
+      name: Start on the mark
+      description: On = first frame on the next clock mark; off = start immediately.
+      required: false
+      selector:
+        boolean:
+    daily_at:
+      name: Capture daily at
+      description: '"HH:MM" time-of-day for a 1-day interval.'
+      required: false
+      selector:
+        text:
+
+timelapse_start:
+  name: Time-lapse start
+  description: Begin or resume capture for one instance.
+  fields:
+    tl_id:
+      name: Instance id
+      required: false
+      selector:
+        text:
+    interval:
+      name: Interval (s)
+      required: false
+      selector:
+        number: { min: 5, max: 3600, step: 5, unit_of_measurement: s, mode: box }
+
+timelapse_stop:
+  name: Time-lapse stop
+  description: Stop capture for one instance (does not resume after a reboot).
+  fields:
+    tl_id:
+      name: Instance id
+      required: false
+      selector:
+        text:
+
+timelapse_set_interval:
+  name: Time-lapse set interval
+  description: Change the capture interval for one instance (while capturing).
+  fields:
+    tl_id:
+      name: Instance id
+      required: false
+      selector:
+        text:
+    interval:
+      name: Interval (s)
+      required: true
+      selector:
+        number: { min: 5, max: 3600, step: 5, unit_of_measurement: s, mode: box }
+
+timelapse_export:
+  name: Time-lapse export MP4
+  description: Render a session's frames to an .mp4 in the same secure folder.
+  fields:
+    tl_id:
+      name: Instance id
+      required: false
+      selector:
+        text:
+    session:
+      name: Session
+      required: false
+      selector:
+        text:
+    fps:
+      name: Frames per second
+      required: false
+      selector:
+        number: { min: 1, max: 60, step: 1, mode: box }
+    name:
+      name: Output file name
+      required: false
+      selector:
+        text:
+
+timelapse_remove:
+  name: Time-lapse remove
+  description: >-
+    Delete one time-lapse instance (stops capture, drops its status sensor). With
+    delete_images on, its captured frames/sessions/exports folder is deleted too.
+  fields:
+    tl_id:
+      name: Instance id
+      required: true
+      selector:
+        text:
+    delete_images:
+      name: Delete images
+      description: Also delete the captured frames/sessions/exports on disk.
+      required: false
+      selector:
+        boolean:
+
+timelapse_clear:
+  name: Time-lapse clear images
+  description: >-
+    Delete ALL captured images, sessions and exported videos for one time-lapse
+    instance (keeps the instance itself). If it was capturing, it continues into a
+    fresh, empty session. This cannot be undone.
+  fields:
+    tl_id:
+      name: Instance id
+      required: false
+      selector:
+        text:

@@ -622,6 +622,134 @@ async def test_oplog_drives_heater_humidifier(hass: HomeAssistant):
     await hass.async_block_till_done()
 
 
+async def test_humidifier_automatic_gear_offline_flips_tile(hass: HomeAssistant):
+    """#82 (v3.19.370): with an AUTOMATIC gear the humidifier's on/off comes from the
+    live `level`, so the op log doesn't own on/off — BUT on an unplug the controller
+    sends `"humidifier": null` (the live decoder early-returns, leaving a stale "On")
+    together with an op-log opType 2 (OFFLINE). opType 2 must force the tile OFF
+    regardless of gear and set the offline attribute, so the card shows "Offline"
+    instead of a stale "On". Confirmed from a live humidifier unplug 2026-10-21."""
+    entry = await _setup(hass)
+    bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
+    _simulate_cb(bus)
+    await hass.async_block_till_done()
+    # Automatic gear → the live level owns on/off (op log does NOT, for on/off).
+    bus.publish(f"ggs/ha/{CB_MAC_LC}/humidifier_gear/state", "Automatic")
+    # A live frame running (level 4) → tile ON from the live decoder.
+    session = ProxySession(CB_MAC, bus)
+    data = dict(CB_DATA)
+    data["humidifier"] = {"modeType": 4, "on": 1, "level": 4}
+    for _ in range(2):
+        _process_publish(session, _pkt(data), bus)
+    if session.initial_poll_task:
+        session.initial_poll_task.cancel()
+    await hass.async_block_till_done()
+    assert hass.states.get("switch.sf_dp1_humidifier").state == "on"
+
+    # Unplug: op-log opType 2 (OFFLINE). Even though the gear is Automatic, OFFLINE
+    # forces the tile off AND sets the offline attribute (the #82 fix).
+    bus.apply_oplog(CB_MAC, [
+        {"id": 9, "epoch": 900, "devType": 27, "opType": 2, "modeType": 4}])
+    await hass.async_block_till_done()
+    h = hass.states.get("switch.sf_dp1_humidifier")
+    assert h.state == "off" and h.attributes.get("offline") is True
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_blower_offline_forces_fan_tile_off(hass: HomeAssistant):
+    """v3.19.371: the blower is live-driven for on/off (its reported speed is a true
+    running output, so the op log normally only adds the "Offline" marker). BUT on an
+    unplug the controller DROPS the blower block from the live getDevSta frame entirely
+    — `_decode_blower` early-returns and leaves a stale running state (same failure as
+    the humidifier #82 null-block bug). op-log opType 2 (OFFLINE) must force the fan
+    tile OFF and set blower_offline. It self-heals: the blower logs a recovery opType-1
+    entry when it returns (confirmed from a live unplug 2026-10-21: op2 13:00:17 → op1
+    13:02:53), so the newest entry stops being op2 and the live decoder repopulates."""
+    entry = await _setup(hass)
+    bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
+    _simulate_cb(bus)
+    await hass.async_block_till_done()
+
+    # A live frame with the blower running (manual mode 13, level 100) → tile ON.
+    session = ProxySession(CB_MAC, bus)
+    data = dict(CB_DATA)
+    data["blower"] = {"modeType": 13, "on": 1, "level": 100}
+    for _ in range(2):
+        _process_publish(session, _pkt(data), bus)
+    if session.initial_poll_task:
+        session.initial_poll_task.cancel()
+    await hass.async_block_till_done()
+    st = json.loads(bus.cached(f"ggs/ha/{CB_MAC_LC}/blower/state"))
+    assert st["state"] == "ON" and st["percentage"] == 100
+
+    # Unplug: the controller drops the blower block AND logs op-log opType 2 (OFFLINE).
+    # opType 2 must force the fan tile OFF (percentage 0) and mark the blower offline.
+    bus.apply_oplog(CB_MAC, [
+        {"id": 50, "epoch": 500, "devType": 21, "opType": 2, "modeType": 13}])
+    await hass.async_block_till_done()
+    st = json.loads(bus.cached(f"ggs/ha/{CB_MAC_LC}/blower/state"))
+    assert st["state"] == "OFF" and st["percentage"] == 0
+    assert bus.cached(f"ggs/ha/{CB_MAC_LC}/blower_speed/state") == "0"
+    assert bus.cached(f"ggs/ha/{CB_MAC_LC}/blower_offline/state") == "ON"
+
+    # Recovery: a newer opType-1 entry clears the offline marker and no longer forces
+    # off, so the live decoder owns on/off again (confirmed real device behaviour).
+    bus.apply_oplog(CB_MAC, [
+        {"id": 51, "epoch": 560, "devType": 21, "opType": 1, "modeType": 13}])
+    await hass.async_block_till_done()
+    assert bus.cached(f"ggs/ha/{CB_MAC_LC}/blower_offline/state") == "OFF"
+    # A fresh live frame (block back) repopulates the running state.
+    for _ in range(2):
+        _process_publish(session, _pkt(data), bus)
+    if session.initial_poll_task:
+        session.initial_poll_task.cancel()
+    await hass.async_block_till_done()
+    st = json.loads(bus.cached(f"ggs/ha/{CB_MAC_LC}/blower/state"))
+    assert st["state"] == "ON" and st["percentage"] == 100
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_offline_survives_reboot_first_backfill(hass: HomeAssistant):
+    """v3.19.371: on an HA restart the in-memory op-log store is empty, so the first
+    getDevOpLog backfill re-seeds it. The offline/active publish loop in apply_oplog
+    runs on EVERY backfill (it is NOT gated by `_oplog_seeded` — only the sf_oplog
+    event-firing is), so if a device is still offline its newest op-log entry is still
+    opType 2 (no newer entry is logged while offline) and the Offline state is restored
+    on reconnect — the blower fan tile and the humidifier switch both come back OFF +
+    offline, not stale ON. This guards the seeded-gating from regressing."""
+    entry = await _setup(hass)
+    bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
+    _simulate_cb(bus)   # CB re-detected from frames after reboot (registers entities)
+    await hass.async_block_till_done()
+    assert CB_MAC_LC not in bus._oplog_seeded  # nothing seeded yet (fresh boot)
+
+    # First op-log backfill after reboot: older ON entries for both, then a NEWER
+    # OFFLINE (opType 2) for each — exactly what the controller returns if the units
+    # are still unplugged. This is the seeding call (seeded was False on entry).
+    bus.apply_oplog(CB_MAC, [
+        {"id": 40, "epoch": 400, "devType": 21, "opType": 1, "modeType": 13},
+        {"id": 41, "epoch": 410, "devType": 27, "opType": 1, "modeType": 4},
+        {"id": 50, "epoch": 500, "devType": 21, "opType": 2, "modeType": 13},
+        {"id": 51, "epoch": 510, "devType": 27, "opType": 2, "modeType": 4}])
+    await hass.async_block_till_done()
+    assert CB_MAC_LC in bus._oplog_seeded  # this call did the seeding
+
+    # Blower fan tile restored to OFF + offline (not a stale ON).
+    st = json.loads(bus.cached(f"ggs/ha/{CB_MAC_LC}/blower/state"))
+    assert st["state"] == "OFF" and st["percentage"] == 0
+    assert bus.cached(f"ggs/ha/{CB_MAC_LC}/blower_offline/state") == "ON"
+    # Humidifier switch restored to off + offline too.
+    h = hass.states.get("switch.sf_dp1_humidifier")
+    assert h.state == "off" and h.attributes.get("offline") is True
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
 async def test_dehumidifier_onoff_from_oplog(hass: HomeAssistant):
     """v3.19.344: the dehumidifier's on/off is driven by its OP LOG, with the
     controller's real semantics (confirmed from a live capture): On = opType 1,

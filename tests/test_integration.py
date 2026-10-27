@@ -175,8 +175,11 @@ async def test_setup_and_cb_entities(hass: HomeAssistant):
 
 async def test_blower_offline_attribute(hass: HomeAssistant):
     """v3.19.346: the blower (devType 21) gets the op-log OFFLINE marker (opType 2)
-    exposed as an `offline` attribute on the fan entity — OFFLINE-ONLY, so its
-    on/off stays live-speed driven (the op log must NOT change the fan's state)."""
+    exposed as an `offline` attribute on the fan entity. On/off is normally live-speed
+    driven, BUT when the unit is unplugged the controller DROPS the blower block from
+    the live frame, so `_decode_blower` can't flip it off and it would sit stale "on".
+    So op-log OFFLINE (opType 2) also force-offs the fan tile (v3.19.371). It self-heals:
+    a recovery opType-1 entry clears offline and a fresh live frame restores on."""
     entry = await _setup(hass)
     bus = hass.data[DOMAIN][entry.entry_id][DATA_BUS]
     _simulate_cb(hass, bus)
@@ -188,20 +191,23 @@ async def test_blower_offline_attribute(hass: HomeAssistant):
     assert blower.state == "on"
     assert blower.attributes.get("offline") is False
 
-    # op-log opType 2 = OFFLINE → the offline attribute flips on, but the fan's
-    # on/off is NOT touched by the op log (still live-driven).
+    # op-log opType 2 = OFFLINE → offline attribute on AND the fan tile forced off
+    # (the live block is gone on a real unplug, so this is the only off signal).
     bus.apply_oplog(CB_MAC, [
         {"id": 10, "epoch": 500, "devType": 21, "opType": 2, "modeType": 3}])
     await hass.async_block_till_done()
     blower = hass.states.get("fan.sf_dp1_blower")
     assert blower.attributes.get("offline") is True
-    assert blower.state == "on"   # live-driven on/off unchanged by the op log
+    assert blower.state == "off"   # v3.19.371: OFFLINE forces the tile off
 
-    # a newer entry (opType 1 / null) clears offline.
+    # a newer entry (opType 1 / null) clears offline; a fresh live frame restores on.
     bus.apply_oplog(CB_MAC, [
         {"id": 11, "epoch": 600, "devType": 21, "opType": 1, "modeType": 3}])
     await hass.async_block_till_done()
     assert hass.states.get("fan.sf_dp1_blower").attributes.get("offline") is False
+    _simulate_cb(hass, bus)   # blower block back → live decoder repopulates on
+    await hass.async_block_till_done()
+    assert hass.states.get("fan.sf_dp1_blower").state == "on"
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
