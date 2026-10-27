@@ -39,12 +39,14 @@ HA can inject commands back.
 The integration ships bundled Lovelace cards and installs them automatically —
 it serves and auto-registers them, so there's no HACS install and no manual
 Lovelace resource entry. The served URLs carry the integration version, so
-browsers refetch the cards on each release automatically. Three cards are
+browsers refetch the cards on each release automatically. Four cards are
 bundled:
 
 - **`custom:spider-farmer-card`** — the main tent card (below).
 - **`custom:spider-light-card`** — a control card for an SE-series light
   (below).
+- **`custom:spider-timelapse-card`** — turns any `camera.*` into a grow
+  time-lapse with an optional live/burned env overlay and MP4 export (below).
 - **`custom:ppfd-3d-card`** — a 3D PPFD visualizer for Spider Farmer SE4500,
   SE5000, SF2000, SF7000 and G1000W grow lights (PPFD curves built from each
   light's published PPFD map). Set it up entirely from the UI — add the card and
@@ -189,44 +191,6 @@ decoded `periods` list as an attribute) and written back with the
   <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Light_Card_01.png" width="300" alt="Spider Light card — dial, mode, and schedule editor" />
 </p>
 
-## Screenshots
-
-**Devices & entities** — everything modeled from live device evidence:
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_01.png" width="660" alt="Integration entries" />
-</p>
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_02.png" width="440" alt="Power Strip device page" />
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_03.png" width="235" alt="Sensor list" />
-</p>
-
-**Controls** — environment targets, climate/fan, and per-outlet modes:
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_04.png" width="270" alt="Environment controls" />
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_05.png" width="250" alt="Climate & fan controls" />
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_06.png" width="245" alt="Outlet controls" />
-</p>
-
-**Editable sensor calibration** — air + per-probe soil offsets and substrate type, written straight back to the controller:
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_07.png" width="330" alt="Calibration and substrate entities" />
-</p>
-
-**Configure → Settings, mappings, migration & probe replacement:**
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_08.png" width="330" alt="Configure menu" />
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_09.png" width="330" alt="Settings options" />
-</p>
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_10.png" width="300" alt="Device slot mappings" />
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_11.png" width="330" alt="Migrate device" />
-  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_12.png" width="300" alt="Replace soil probe" />
-</p>
-
 ## Time-lapse
 
 Turn any Home Assistant `camera.*` into a grow time-lapse. The integration captures a
@@ -288,6 +252,44 @@ image:
 
 See [docs/ENTITIES.md](docs/ENTITIES.md#time-lapse) for the per-instance
 `sensor.sf_timelapse_<name>` attributes and the `sf.timelapse_*` services.
+
+## Screenshots
+
+**Devices & entities** — everything modeled from live device evidence:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_01.png" width="660" alt="Integration entries" />
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_02.png" width="440" alt="Power Strip device page" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_03.png" width="235" alt="Sensor list" />
+</p>
+
+**Controls** — environment targets, climate/fan, and per-outlet modes:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_04.png" width="270" alt="Environment controls" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_05.png" width="250" alt="Climate & fan controls" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_06.png" width="245" alt="Outlet controls" />
+</p>
+
+**Editable sensor calibration** — air + per-probe soil offsets and substrate type, written straight back to the controller:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_07.png" width="330" alt="Calibration and substrate entities" />
+</p>
+
+**Configure → Settings, mappings, migration & probe replacement:**
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_08.png" width="330" alt="Configure menu" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_09.png" width="330" alt="Settings options" />
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_10.png" width="300" alt="Device slot mappings" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_11.png" width="330" alt="Migrate device" />
+  <img src="https://raw.githubusercontent.com/cobragt2000/spider_farmer_bridge/main/docs/images/Integration_12.png" width="300" alt="Replace soil probe" />
+</p>
 
 ## What you get
 
