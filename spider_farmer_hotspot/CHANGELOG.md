@@ -4,6 +4,11 @@ All notable changes to the **Spider Farmer Hotspot** add-on. The Supervisor
 offers an update whenever the `version` in `config.yaml` increases; the notes
 below are shown on the add-on's Changelog tab.
 
+## 0.8.7
+
+- **Add-on icon/logo.** The add-on now shows the Spider Farmer Bridge icon in the
+  Add-on Store and on its info page (matching the integration). No behaviour change.
+
 ## 0.8.6
 
 - Clear Supervisor deprecation warnings: use the `homeassistant_config` map
