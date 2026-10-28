@@ -1,5 +1,16 @@
 # Spider Farmer Bridge for Home Assistant
 
+> **This fork** adds one thing to [cobragt2000/spider_farmer_bridge](https://github.com/cobragt2000/spider_farmer_bridge):
+> the proxy can run as its own process, the way Matter Server runs beside
+> Home Assistant's Matter integration. `bridge/server.py` runs the unchanged
+> `proxy/` and serves a WebSocket API; an entry with a `bridge_url` is that
+> server's client. The controllers' sessions then survive Home Assistant
+> restarts. It ships as the **Spider Farmer Bridge** app for the native macOS
+> Supervisor ([ha-macos-apps](https://github.com/clara-mostly-human/ha-macos-apps)),
+> which announces itself so Home Assistant offers the integration. Without a
+> `bridge_url` the integration runs the proxy itself, exactly as upstream.
+> Everything else is upstream's work; see below.
+
 [![Validate](https://github.com/cobragt2000/spider_farmer_bridge/actions/workflows/validate.yml/badge.svg)](https://github.com/cobragt2000/spider_farmer_bridge/actions/workflows/validate.yml)
 [![hacs](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![Discord](https://img.shields.io/badge/Discord-Join%20our%20chat-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/YZCcdwXTCp)
