@@ -10,6 +10,10 @@ DEFAULT_LISTEN_PORT   = 8000
 DEFAULT_UPSTREAM_HOST = "sf.mqtt.spider-farmer.com"
 DEFAULT_UPSTREAM_PORT = 8883   # real Spider Farmer cloud port (unchanged)
 CONF_ALLOW_CONTROL = "allow_control"
+# WebSocket URL of the Spider Farmer Bridge app. When set, the proxy runs in
+# the app (like Matter Server) and this integration is its client; when unset,
+# the proxy runs inside Home Assistant as before.
+CONF_BRIDGE_URL = "bridge_url"
 CONF_BLOCK_CLOUD = "block_cloud"
 CONF_KEEP_OFFLINE = "keep_offline_entities"
 # Device offline (data-staleness) timeout in seconds (v3.19.320): a controller

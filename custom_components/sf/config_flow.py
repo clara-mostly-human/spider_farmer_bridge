@@ -6,6 +6,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import selector
+from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 
 from .const import (
     DOMAIN,
@@ -17,6 +18,7 @@ from .const import (
     DEFAULT_UPSTREAM_PORT,
     CONF_ALLOW_CONTROL,
     CONF_BLOCK_CLOUD,
+    CONF_BRIDGE_URL,
     CONF_DIAG_PER_BOOT,
     CONF_KEEP_OFFLINE,
     CONF_OFFLINE_TIMEOUT,
@@ -141,6 +143,39 @@ class SfBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"port": str(DEFAULT_LISTEN_PORT)},
         )
 
+    async def async_step_hassio(self, discovery_info: HassioServiceInfo):
+        """The Spider Farmer Bridge app announced itself (Supervisor discovery).
+
+        With the app the proxy runs outside Home Assistant, like Matter Server:
+        this entry becomes its client. An existing entry is switched over to
+        the app's URL (and reloaded)."""
+        config = discovery_info.config
+        url = f"ws://{config['host']}:{config['port']}/ws"
+        await self.async_set_unique_id(DOMAIN)
+        self._abort_if_unique_id_configured(updates={CONF_BRIDGE_URL: url})
+        self._bridge_url = url
+        self._app_name = discovery_info.name
+        return await self.async_step_hassio_confirm()
+
+    async def async_step_hassio_confirm(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(
+                title="Spider Farmer Bridge",
+                data={
+                    CONF_BRIDGE_URL: self._bridge_url,
+                    CONF_ALLOW_CONTROL: user_input[CONF_ALLOW_CONTROL],
+                    CONF_KEEP_OFFLINE: user_input[CONF_KEEP_OFFLINE],
+                },
+            )
+        return self.async_show_form(
+            step_id="hassio_confirm",
+            data_schema=vol.Schema({
+                vol.Required(CONF_ALLOW_CONTROL, default=False): bool,
+                vol.Required(CONF_KEEP_OFFLINE, default=True): bool,
+            }),
+            description_placeholders={"app": self._app_name},
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
@@ -180,7 +215,13 @@ class SfBridgeOptionsFlow(config_entries.OptionsFlow):
             )
 
         # Ports + Spider Farmer cloud host/port (host/port are read-only).
-        schema = _base_schema(current).extend({
+        # With the bridge app the app owns ports and the upstream instead.
+        schema = _base_schema(current)
+        if current.get(CONF_BRIDGE_URL):
+            proxy_fields = {CONF_LISTEN_PORT, CONF_UPSTREAM_HOST, CONF_UPSTREAM_PORT}
+            schema = vol.Schema({k: v for k, v in schema.schema.items()
+                                 if str(k) not in proxy_fields})
+        schema = schema.extend({
             vol.Required(
                 CONF_BLOCK_CLOUD,
                 default=current.get(CONF_BLOCK_CLOUD, False),

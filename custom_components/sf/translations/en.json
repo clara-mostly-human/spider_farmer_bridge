@@ -12,6 +12,14 @@
           "keep_offline_entities": "Keep offline devices (don't remove entities for gear that stops reporting; uncheck to prune phantoms)",
           "environment_entities": "Create Environment Settings entities (per display panel: temp/humidity/CO2 targets)"
         }
+      },
+      "hassio_confirm": {
+        "title": "Spider Farmer Bridge app",
+        "description": "Connect to the Spider Farmer Bridge app ({app})? The app runs the proxy that your GGS controllers connect to; Home Assistant gets their devices from it.",
+        "data": {
+          "allow_control": "Allow device control (enable to send commands to devices)",
+          "keep_offline_entities": "Keep offline devices (don't remove entities for gear that stops reporting; uncheck to prune phantoms)"
+        }
       }
     },
     "abort": {

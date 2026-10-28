@@ -18,7 +18,7 @@ from .cert_manager import ensure_certs, cert_paths, upstream_ca_path
 from .const import (
     DOMAIN, CONF_LISTEN_PORT, CONF_UPSTREAM_HOST, CONF_UPSTREAM_PORT,
     DEFAULT_LISTEN_PORT, DEFAULT_UPSTREAM_HOST, DEFAULT_UPSTREAM_PORT,
-    CONF_ALLOW_CONTROL, CONF_BLOCK_CLOUD, CONF_DIAG_PER_BOOT,
+    CONF_ALLOW_CONTROL, CONF_BLOCK_CLOUD, CONF_BRIDGE_URL, CONF_DIAG_PER_BOOT,
     CONF_KEEP_OFFLINE, CONF_OFFLINE_TIMEOUT, DEFAULT_OFFLINE_TIMEOUT,
     CONF_STRIP_SENSORS, CONF_SMART_CONTROL, CONF_OUTLET_ENV, DATA_BUS,
     DATA_PROXY, DATA_PROXY_TASK, PLATFORMS,
@@ -27,6 +27,7 @@ from .const import (
 )
 from .entity_defs import HA_STATUS_TOPIC
 from .proxy.mitm_proxy import MITMProxy
+from .remote.client import RemoteProxy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,15 +115,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     listen_port   = int(cfg.get(CONF_LISTEN_PORT,   DEFAULT_LISTEN_PORT))
     upstream_host =     cfg.get(CONF_UPSTREAM_HOST, DEFAULT_UPSTREAM_HOST)
     upstream_port = int(cfg.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT))
+    bridge_url = cfg.get(CONF_BRIDGE_URL)
 
-    # ── Bundled certs ──────────────────────────────────────────────────────
-    try:
-        cert_dir = await hass.async_add_executor_job(ensure_certs, hass.config.config_dir)
-    except Exception as exc:
-        _LOGGER.error("Spider Farmer Bridge: cert setup failed: %s", exc)
-        return False
+    # ── Bundled certs (only the in-process proxy terminates TLS) ──────────
+    if not bridge_url:
+        try:
+            cert_dir = await hass.async_add_executor_job(ensure_certs, hass.config.config_dir)
+        except Exception as exc:
+            _LOGGER.error("Spider Farmer Bridge: cert setup failed: %s", exc)
+            return False
 
-    server_cert, server_key, ca_cert = cert_paths(cert_dir)
+        server_cert, server_key, ca_cert = cert_paths(cert_dir)
 
     # ── Diagnostic log (optional, options-toggled) ────────────────────────
     await hass.async_add_executor_job(_apply_diag_options, hass, cfg)
@@ -132,23 +135,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     bus.keep_offline = bool(cfg.get(CONF_KEEP_OFFLINE, True))
 
     # ── Proxy — publishes decoded state into the bus ─────────────────────
-    proxy_config = {
-        "proxy": {
-            "listen_host":              "0.0.0.0",
-            "listen_port":              listen_port,
-            "upstream_host":            upstream_host,
-            "upstream_port":            upstream_port,
-            "cert_file":                server_cert,
-            "upstream_ca_file":         upstream_ca_path(),
-            "key_file":                 server_key,
-            "ca_file":                  ca_cert,
-            "config_poll_interval_sec": _POLL_INTERVAL_SEC,
-        },
+    proxy_settings = {
+        "allow_control": bool(cfg.get(CONF_ALLOW_CONTROL, False)),
+        "block_cloud": bool(cfg.get(CONF_BLOCK_CLOUD, False)),
+        "offline_timeout": float(cfg.get(CONF_OFFLINE_TIMEOUT, DEFAULT_OFFLINE_TIMEOUT) or 0),
     }
-    proxy = MITMProxy(config=proxy_config, mqtt_client=bus, config_path=None)
-    proxy.allow_control = bool(cfg.get(CONF_ALLOW_CONTROL, False))
-    proxy.block_cloud = bool(cfg.get(CONF_BLOCK_CLOUD, False))
-    proxy.offline_timeout = float(cfg.get(CONF_OFFLINE_TIMEOUT, DEFAULT_OFFLINE_TIMEOUT) or 0)
+    if bridge_url:
+        # The proxy runs in the Spider Farmer Bridge app; this is its client.
+        proxy = RemoteProxy(hass, bus, bridge_url, proxy_settings)
+    else:
+        proxy_config = {
+            "proxy": {
+                "listen_host":              "0.0.0.0",
+                "listen_port":              listen_port,
+                "upstream_host":            upstream_host,
+                "upstream_port":            upstream_port,
+                "cert_file":                server_cert,
+                "upstream_ca_file":         upstream_ca_path(),
+                "key_file":                 server_key,
+                "ca_file":                  ca_cert,
+                "config_poll_interval_sec": _POLL_INTERVAL_SEC,
+            },
+        }
+        proxy = MITMProxy(config=proxy_config, mqtt_client=bus, config_path=None)
+        proxy.allow_control = proxy_settings["allow_control"]
+        proxy.block_cloud = proxy_settings["block_cloud"]
+        proxy.offline_timeout = proxy_settings["offline_timeout"]
     bus.proxy = proxy
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
@@ -236,6 +248,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_timelapse)
             )
         entry.async_on_unload(timelapse.cancel_all)
+
+    if bridge_url:
+        hass.data[DOMAIN][entry.entry_id][DATA_PROXY_TASK] = (
+            entry.async_create_background_task(
+                hass, proxy.run(), "Spider Farmer Bridge app connection"
+            )
+        )
+        _remove_apply_entities(hass)
+        entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+        return True
 
     # ── TLS server context (blocking load in executor) ────────────────────
     def _build_ssl_ctx():
@@ -1432,7 +1454,7 @@ def _apply_diag_options(hass: HomeAssistant, cfg: dict) -> None:
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Apply option changes live without reloading the integration."""
     data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-    proxy: MITMProxy | None = data.get(DATA_PROXY)
+    proxy: MITMProxy | RemoteProxy | None = data.get(DATA_PROXY)
     bus = data.get(DATA_BUS)
     if proxy is None:
         await hass.config_entries.async_reload(entry.entry_id)
@@ -1549,9 +1571,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if bus is not None:
         bus.stop_grace()
     proxy = data.get(DATA_PROXY)
-    if proxy is not None:
+    if proxy is not None and not getattr(proxy, "remote", False):
         # Sever device connections so they reconnect to the reloaded
-        # instance instead of relaying into this dead one.
+        # instance instead of relaying into this dead one. (The bridge app
+        # keeps its sessions; the reloaded instance gets a snapshot.)
         proxy.close_all_sessions()
     stop: asyncio.Event | None = data.get("stop_event")
     if stop:
