@@ -164,6 +164,7 @@ class SfBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_BRIDGE_URL: self._bridge_url,
                     CONF_ALLOW_CONTROL: user_input[CONF_ALLOW_CONTROL],
+                    CONF_BLOCK_CLOUD: user_input[CONF_BLOCK_CLOUD],
                     CONF_KEEP_OFFLINE: user_input[CONF_KEEP_OFFLINE],
                 },
             )
@@ -171,6 +172,7 @@ class SfBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="hassio_confirm",
             data_schema=vol.Schema({
                 vol.Required(CONF_ALLOW_CONTROL, default=False): bool,
+                vol.Required(CONF_BLOCK_CLOUD, default=False): bool,
                 vol.Required(CONF_KEEP_OFFLINE, default=True): bool,
             }),
             description_placeholders={"app": self._app_name},

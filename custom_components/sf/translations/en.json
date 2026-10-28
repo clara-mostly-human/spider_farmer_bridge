@@ -18,6 +18,7 @@
         "description": "Connect to the Spider Farmer Bridge app ({app})? The app runs the proxy that your GGS controllers connect to; Home Assistant gets their devices from it.",
         "data": {
           "allow_control": "Allow device control (enable to send commands to devices)",
+          "block_cloud": "Local only (never relay to the Spider Farmer cloud; the phone app loses remote access and firmware updates)",
           "keep_offline_entities": "Keep offline devices (don't remove entities for gear that stops reporting; uncheck to prune phantoms)"
         }
       }

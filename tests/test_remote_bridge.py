@@ -146,3 +146,44 @@ async def test_entities_go_unavailable_when_the_app_stops(hass: HomeAssistant, t
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+async def test_app_discovery_sets_up_a_client_entry(hass: HomeAssistant):
+    from homeassistant.config_entries import SOURCE_HASSIO
+    from homeassistant.data_entry_flow import FlowResultType
+    from homeassistant.helpers.service_info.hassio import HassioServiceInfo
+
+    info = HassioServiceInfo(
+        config={"host": "127.0.0.1", "port": API_PORT, "addon": "Spider Farmer Bridge"},
+        name="Spider Farmer Bridge", slug="core_spider_farmer_bridge", uuid="1234")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_HASSIO}, data=info)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "hassio_confirm"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"allow_control": False, "block_cloud": True, "keep_offline_entities": True})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["bridge_url"] == f"ws://127.0.0.1:{API_PORT}/ws"
+    assert result["data"]["block_cloud"] is True
+    entry = result["result"]
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_app_discovery_switches_an_existing_entry(hass: HomeAssistant):
+    from homeassistant.config_entries import SOURCE_HASSIO
+    from homeassistant.data_entry_flow import FlowResultType
+    from homeassistant.helpers.service_info.hassio import HassioServiceInfo
+
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN,
+                            data={"listen_port": 18990, "allow_control": True})
+    entry.add_to_hass(hass)
+    info = HassioServiceInfo(
+        config={"host": "127.0.0.1", "port": API_PORT, "addon": "Spider Farmer Bridge"},
+        name="Spider Farmer Bridge", slug="core_spider_farmer_bridge", uuid="1234")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_HASSIO}, data=info)
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.data["bridge_url"] == f"ws://127.0.0.1:{API_PORT}/ws"
+    assert entry.data["allow_control"] is True
